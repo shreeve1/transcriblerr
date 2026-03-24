@@ -113,12 +113,31 @@ interface ModelInstallProgressEvent {
 const API_BASE_URL =
   (import.meta.env.VITE_ASR_API_BASE_URL as string | undefined)?.trim() || "";
 
+const LANGUAGE_LABELS: Record<string, string> = {
+  auto: "Auto Detect",
+  ja: "Japanese",
+  en: "English",
+  zh: "Chinese",
+  ko: "Korean",
+  es: "Spanish",
+  fr: "French",
+  de: "German",
+  it: "Italian",
+  pt: "Portuguese",
+  ru: "Russian",
+};
+
+const normalizeLanguageOptions = (
+  languages: [string, string][],
+): [string, string][] =>
+  languages.map(([code, name]) => [code, LANGUAGE_LABELS[code] ?? name]);
+
 function App() {
   const [isMuted, setIsMuted] = useState(true);
   const [isInitialized, setIsInitialized] = useState(false);
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
-  const [selectedLanguage, setSelectedLanguage] = useState<string>("ja");
+  const [selectedLanguage, setSelectedLanguage] = useState<string>("en");
   const [availableLanguages, setAvailableLanguages] = useState<
     [string, string][]
   >([]);
@@ -337,7 +356,7 @@ function App() {
       } catch (err) {
         console.error("Failed to save streaming config:", err);
         setError(
-          `ストリーミング設定エラー: ${
+          `Streaming settings error: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );
@@ -375,7 +394,7 @@ function App() {
       } catch (err) {
         console.error("Failed to save Whisper params:", err);
         setError(
-          `Whisper設定エラー: ${
+          `Whisper settings error: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );
@@ -407,7 +426,7 @@ function App() {
       } catch (err) {
         console.error("Failed to save transcription backend config:", err);
         setError(
-          `文字起こしバックエンド設定エラー: ${
+          `Transcription backend settings error: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );
@@ -421,7 +440,7 @@ function App() {
 
     if (!isRecordingActive) {
       if (!recordingSaveEnabled || !recordingSavePath) {
-        setError("録画保存を有効にして保存先フォルダを設定してください");
+        setError("Enable recording save and set a destination folder.");
         return;
       }
       if (
@@ -429,11 +448,11 @@ function App() {
         !screenRecordingEnabled &&
         !isInitialized
       ) {
-        setError("録画を開始する前にモデルを初期化してください");
+        setError("Initialize a model before starting recording.");
         return;
       }
 
-      // 既存の文字起こし履歴をクリアして新しい録画用にリセット
+      // Clear existing transcription history and reset for a new recording.
       setTranscriptions([]);
       setPlayingSessionKey(null);
       if (currentAudioSource) {
@@ -488,7 +507,7 @@ function App() {
         }
         setIsRecordingActive(false);
         setError(
-          `録画開始エラー: ${err instanceof Error ? err.message : String(err)}`,
+          `Recording start error: ${err instanceof Error ? err.message : String(err)}`,
         );
       } finally {
         setIsRecordingBusy(false);
@@ -508,7 +527,7 @@ function App() {
     } catch (err) {
       console.error("Failed to stop recording session:", err);
       setError(
-        `録画停止エラー: ${err instanceof Error ? err.message : String(err)}`,
+        `Recording stop error: ${err instanceof Error ? err.message : String(err)}`,
       );
     } finally {
       setIsRecordingBusy(false);
@@ -540,7 +559,7 @@ function App() {
     } catch (err) {
       console.error("Failed to save recording save config:", err);
       setError(
-        `録画保存設定エラー: ${
+        `Recording save settings error: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
@@ -637,7 +656,7 @@ function App() {
     } catch (err) {
       console.error("Failed to save screen recording config:", err);
       setError(
-        `画面録画設定エラー: ${
+        `Screen recording settings error: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
@@ -812,14 +831,29 @@ function App() {
       });
     } catch (err) {
       console.error("Model scan error:", err);
-      setError(`モデルスキャンエラー: ${err}`);
+      setError(`Model scan error: ${err}`);
     }
   };
 
   const loadLanguages = async () => {
     try {
       const langs = await invoke<[string, string][]>("get_supported_languages");
-      setAvailableLanguages(langs);
+      const normalizedLangs = normalizeLanguageOptions(langs);
+      setAvailableLanguages(normalizedLangs);
+
+      if (
+        normalizedLangs.length > 0 &&
+        !normalizedLangs.some(([code]) => code === selectedLanguage)
+      ) {
+        const fallbackLanguage = normalizedLangs.some(([code]) => code === "en")
+          ? "en"
+          : normalizedLangs[0][0];
+        setSelectedLanguage(fallbackLanguage);
+        localStorage.setItem("selectedLanguage", fallbackLanguage);
+        await invoke("update_language", {
+          language: fallbackLanguage === "auto" ? null : fallbackLanguage,
+        });
+      }
     } catch (err) {
       console.error("Failed to load languages:", err);
     }
@@ -832,7 +866,7 @@ function App() {
       setRemoteModels(models);
     } catch (err) {
       console.error("Failed to load remote models:", err);
-      setError(`リモートモデル取得エラー: ${err}`);
+      setError(`Remote model fetch error: ${err}`);
     } finally {
       setIsLoadingRemoteModels(false);
     }
@@ -853,7 +887,7 @@ function App() {
       }
     } catch (err) {
       console.error("Failed to load audio devices:", err);
-      setError(`マイクデバイス取得エラー: ${err}`);
+      setError(`Microphone device fetch error: ${err}`);
     }
   };
 
@@ -875,7 +909,7 @@ function App() {
       setSelectedAudioDevice(deviceName);
     } catch (err) {
       console.error("Failed to select audio device:", err);
-      setError(`デバイス選択エラー: ${err}`);
+      setError(`Device selection error: ${err}`);
     }
   };
 
@@ -900,7 +934,7 @@ function App() {
         ? transcriptions[transcriptions.length - 1]
         : undefined;
     if (!latestSession || latestSession.messages.length === 0) {
-      setError("要約対象のセッションがありません");
+      setError("No session available to summarize.");
       return;
     }
 
@@ -909,7 +943,7 @@ function App() {
       .join("\n")
       .trim();
     if (!text) {
-      setError("要約対象のテキストがありません");
+      setError("No text available to summarize.");
       return;
     }
 
@@ -942,7 +976,7 @@ function App() {
     } catch (err) {
       console.error("Failed to summarize session:", err);
       setError(
-        `要約エラー: ${err instanceof Error ? err.message : String(err)}`,
+        `Summary error: ${err instanceof Error ? err.message : String(err)}`,
       );
     } finally {
       setIsSummarizing(false);
@@ -965,7 +999,7 @@ function App() {
     } catch (err) {
       console.error("Failed to update language:", err);
       setError(
-        `言語変更エラー: ${err instanceof Error ? err.message : String(err)}`,
+        `Language update error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   };
@@ -989,7 +1023,7 @@ function App() {
     } catch (err) {
       console.error("Install model error:", err);
       setError(
-        `モデルインストールエラー: ${
+        `Model install error: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
@@ -1008,7 +1042,7 @@ function App() {
     } catch (err) {
       console.error("Delete model error:", err);
       setError(
-        `モデル削除エラー: ${err instanceof Error ? err.message : String(err)}`,
+        `Model delete error: ${err instanceof Error ? err.message : String(err)}`,
       );
     } finally {
       setModelOperations((prev) => ({ ...prev, [model.id]: false }));
@@ -1039,7 +1073,7 @@ function App() {
       await invoke("initialize_whisper", { modelPath: selectedModel });
       setIsInitialized(true);
     } catch (err) {
-      setError(`初期化エラー: ${err}`);
+      setError(`Initialization error: ${err}`);
       setIsInitialized(false);
     }
   };
@@ -1064,7 +1098,7 @@ function App() {
     setIsMicBusy(true);
 
     if (transcriptionMode === "local" && !isInitialized) {
-      setError("モデルを初期化中です...");
+      setError("Model is initializing...");
       setIsMicBusy(false);
       return;
     }
@@ -1078,7 +1112,7 @@ function App() {
     } catch (err) {
       console.error("Mic start error:", err);
       setError(
-        `マイク開始エラー: ${err instanceof Error ? err.message : String(err)}`,
+        `Microphone start error: ${err instanceof Error ? err.message : String(err)}`,
       );
     } finally {
       setIsMicBusy(false);
@@ -1099,7 +1133,7 @@ function App() {
     } catch (err) {
       console.error("Mic stop error:", err);
       setError(
-        `録音停止エラー: ${err instanceof Error ? err.message : String(err)}`,
+        `Microphone stop error: ${err instanceof Error ? err.message : String(err)}`,
       );
     } finally {
       setIsMicBusy(false);
@@ -1126,7 +1160,7 @@ function App() {
         .catch((err) => {
           console.error("Failed to disable transcription suppression:", err);
           setError(
-            `文字起こし再開エラー: ${
+            `Resume transcription error: ${
               err instanceof Error ? err.message : String(err)
             }`,
           );
@@ -1155,14 +1189,14 @@ function App() {
       }, 1500);
     } catch (err) {
       setError(
-        `コピーエラー: ${err instanceof Error ? err.message : String(err)}`,
+        `Copy error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   };
 
   const formatSegmentTimestamp = (timestamp: number) => {
     const millis = timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
-    return new Date(millis).toLocaleString("ja-JP", {
+    return new Date(millis).toLocaleString("en-US", {
       hour12: false,
     });
   };
@@ -1211,7 +1245,7 @@ function App() {
       }, 1500);
     } catch (err) {
       setError(
-        `履歴コピーエラー: ${err instanceof Error ? err.message : String(err)}`,
+        `History copy error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   };
@@ -1248,7 +1282,7 @@ function App() {
         } catch (err) {
           console.error("Failed to enable transcription suppression:", err);
           setError(
-            `文字起こし停止エラー: ${
+            `Pause transcription error: ${
               err instanceof Error ? err.message : String(err)
             }`,
           );
@@ -1287,7 +1321,7 @@ function App() {
                 err,
               );
               setError(
-                `文字起こし再開エラー: ${
+                `Resume transcription error: ${
                   err instanceof Error ? err.message : String(err)
                 }`,
               );
@@ -1299,7 +1333,7 @@ function App() {
     } catch (err) {
       console.error("Audio playback error:", err);
       setError(
-        `音声再生エラー: ${err instanceof Error ? err.message : String(err)}`,
+        `Audio playback error: ${err instanceof Error ? err.message : String(err)}`,
       );
       setPlayingSessionKey(null);
       if (transcriptionSuppressedForPlaybackRef.current) {
@@ -1346,8 +1380,8 @@ function App() {
             className="btn btn-ghost btn-sm btn-square"
             onClick={clearAllMessages}
             disabled={transcriptions.length === 0}
-            title="メッセージをクリア"
-            aria-label="メッセージをクリア"
+            title="Clear messages"
+            aria-label="Clear messages"
           >
             <Trash2 className="w-4 h-4" />
           </button>
@@ -1355,8 +1389,8 @@ function App() {
             className="btn btn-ghost btn-sm btn-square"
             onClick={handleCopyAllHistory}
             disabled={transcriptions.length === 0}
-            title={copiedAllHistory ? "履歴コピー完了" : "履歴をすべてコピー"}
-            aria-label="履歴をすべてコピー"
+            title={copiedAllHistory ? "History copied" : "Copy all history"}
+            aria-label="Copy all history"
           >
             {copiedAllHistory ? (
               <Check className="w-4 h-4" />
@@ -1376,7 +1410,7 @@ function App() {
                 e.target.checked ? "api" : "local",
               )
             }
-            title="Pro モード切替"
+            title="Toggle Pro mode"
           />
           <span className="text-xs font-semibold text-primary">Pro</span>
         </div>
@@ -1386,9 +1420,9 @@ function App() {
             className={`btn btn-ghost btn-sm ${isSummarizing ? "btn-disabled" : ""}`}
             onClick={summarizeCurrentSession}
             disabled={isSummarizing || transcriptions.length === 0}
-            title="今のセッションを要約"
+            title="Summarize current session"
           >
-            {isSummarizing ? "要約中..." : "要約"}
+            {isSummarizing ? "Summarizing..." : "Summarize"}
           </button>
         )}
 
@@ -1401,7 +1435,7 @@ function App() {
             className="select select-bordered select-xs w-24 font-normal"
           >
             {availableLanguages.length === 0 ? (
-              <option value="ja">日本語</option>
+              <option value="en">English</option>
             ) : (
               availableLanguages.map(([code, name]) => (
                 <option key={code} value={code}>
@@ -1425,7 +1459,11 @@ function App() {
                 isMicBusy || (transcriptionMode === "local" && !isInitialized)
               }
               title={
-                isMicBusy ? "接続中..." : isMuted ? "マイクON" : "マイクOFF"
+                isMicBusy
+                  ? "Connecting..."
+                  : isMuted
+                    ? "Mic on"
+                    : "Mic off"
               }
             >
               {isMicBusy ? (
@@ -1443,7 +1481,7 @@ function App() {
               } ${isRecordingBusy ? "btn-disabled" : ""}`}
               onClick={toggleRecording}
               disabled={isRecordingBusy}
-              title={isRecordingActive ? "録画停止" : "録画開始"}
+              title={isRecordingActive ? "Stop recording" : "Start recording"}
             >
               {isRecordingActive ? (
                 <StopCircle className="w-4 h-4" />
@@ -1468,13 +1506,13 @@ function App() {
           <div className="absolute top-4 left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-3xl z-20">
             <div className="bg-base-200 border border-base-300 rounded-xl shadow-sm">
               <div className="px-3 py-2 flex items-center justify-between">
-                <span className="text-sm font-medium">要約</span>
+                <span className="text-sm font-medium">Summary</span>
                 <div className="flex items-center gap-1">
                   <button
                     className="btn btn-ghost btn-xs btn-square"
                     onClick={() => setIsSummaryExpanded((prev) => !prev)}
-                    title={isSummaryExpanded ? "折りたたむ" : "展開する"}
-                    aria-label={isSummaryExpanded ? "折りたたむ" : "展開する"}
+                    title={isSummaryExpanded ? "Collapse" : "Expand"}
+                    aria-label={isSummaryExpanded ? "Collapse" : "Expand"}
                   >
                     {isSummaryExpanded ? (
                       <ChevronUp className="w-4 h-4" />
@@ -1485,8 +1523,8 @@ function App() {
                   <button
                     className="btn btn-ghost btn-xs btn-square"
                     onClick={() => setSummaryPanelText(null)}
-                    title="閉じる"
-                    aria-label="閉じる"
+                    title="Close"
+                    aria-label="Close"
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -1521,21 +1559,21 @@ function App() {
               <div className="max-w-3xl mx-auto border border-base-300 rounded-xl p-4 bg-base-200/50 space-y-4">
                 <div>
                   <p className="text-sm font-semibold">
-                    まず Whisper モデルをインストールしてください
+                    Install a Whisper model first
                   </p>
                   <p className="text-xs opacity-70 mt-1">
-                    ローカルモードではモデルがないとマイク文字起こしを開始できません。下から1つ選んでインストールしてください。
+                    In Local mode, microphone transcription cannot start without a model. Select one below and install it.
                   </p>
                 </div>
 
                 {isLoadingRemoteModels ? (
                   <div className="flex items-center gap-2 text-sm">
                     <span className="loading loading-spinner loading-xs"></span>
-                    モデル一覧を読み込み中...
+                    Loading model list...
                   </div>
                 ) : remoteModels.length === 0 ? (
                   <p className="text-sm opacity-70">
-                    利用可能なモデル一覧を取得できませんでした。設定画面の「モデル設定」から再読み込みしてください。
+                    Failed to fetch available models. Reload from Settings (Model Settings).
                   </p>
                 ) : (
                   <div className="space-y-3">
@@ -1589,11 +1627,11 @@ function App() {
                           >
                             {isInstalling
                               ? progress?.status === "downloading"
-                                ? "ダウンロード中..."
-                                : "処理中..."
+                                ? "Downloading..."
+                                : "Processing..."
                               : model.installed
-                                ? "使用する"
-                                : "インストール"}
+                                ? "Use"
+                                : "Install"}
                           </button>
                         </div>
                       );
@@ -1607,10 +1645,10 @@ function App() {
               <div className="flex-1 flex flex-col items-center justify-center text-center text-base-content/30 min-h-[50vh]">
                 <MessageSquare className="w-16 h-16 mb-4 opacity-20" />
                 <p className="text-sm font-medium">
-                  マイクをオンにして、あなたの声を文字起こしします。
+                  Turn on the mic to transcribe your voice.
                 </p>
                 <p className="text-sm font-medium">
-                  録音/録画をオンにして、システム音声を文字起こしします。
+                  Turn on recording to transcribe system audio.
                 </p>
               </div>
             ) : (
@@ -1664,8 +1702,8 @@ function App() {
                           className="btn btn-ghost btn-xs btn-circle"
                           title={
                             copiedSessionKey === session.sessionKey
-                              ? "コピー完了"
-                              : "コピー"
+                              ? "Copied"
+                              : "Copy"
                           }
                         >
                           {copiedSessionKey === session.sessionKey ? (
@@ -1731,7 +1769,7 @@ function App() {
                 setIsAutoScrollPaused(false);
               }}
             >
-              新規メッセージ {newMessageCount}件
+              New messages: {newMessageCount}
             </button>
           </div>
         )}
@@ -1742,7 +1780,7 @@ function App() {
         <dialog className="modal modal-open">
           <div className="modal-box">
             <h3 className="font-bold text-lg mb-4 flex items-center justify-between">
-              <span>設定</span>
+              <span>Settings</span>
               <label className="swap swap-rotate btn btn-ghost btn-circle btn-sm">
                 <input
                   type="checkbox"
@@ -1762,12 +1800,12 @@ function App() {
                 open
               >
                 <summary className="collapse-title text-sm font-semibold">
-                  モデル設定
+                  Model Settings
                 </summary>
                 <div className="collapse-content space-y-4">
                   <div className="form-control">
                     <label className="label">
-                      <span className="label-text">使用モデル</span>
+                        <span className="label-text">Selected Model</span>
                     </label>
                     <select
                       value={selectedModel}
@@ -1782,7 +1820,7 @@ function App() {
                     </select>
                     {selectedModel && (
                       <p className="text-xs opacity-60 mt-2 break-all">
-                        使用中: {selectedModelDisplayName}
+                        In use: {selectedModelDisplayName}
                       </p>
                     )}
                   </div>
@@ -1790,14 +1828,14 @@ function App() {
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <span className="label-text font-semibold">
-                        利用可能なモデル
+                        Available Models
                       </span>
                       <button
                         className="btn btn-xs"
                         onClick={refreshAllModels}
                         disabled={isLoadingRemoteModels}
                       >
-                        更新
+                        Refresh
                       </button>
                     </div>
 
@@ -1805,11 +1843,11 @@ function App() {
                       {isLoadingRemoteModels ? (
                         <div className="flex items-center gap-2 text-sm">
                           <span className="loading loading-spinner loading-xs"></span>
-                          読み込み中...
+                          Loading...
                         </div>
                       ) : remoteModels.length === 0 ? (
                         <p className="text-sm opacity-60">
-                          利用可能なモデルが見つかりません
+                          No available models found
                         </p>
                       ) : (
                         remoteModels.map((model) => {
@@ -1875,8 +1913,8 @@ function App() {
                                         }
                                       >
                                         {selectedModel === model.path
-                                          ? "使用中"
-                                          : "使用する"}
+                                          ? "In use"
+                                          : "Use"}
                                       </button>
                                       <button
                                         className="btn btn-xs btn-error text-[11px]"
@@ -1884,8 +1922,8 @@ function App() {
                                         disabled={modelOperations[model.id]}
                                       >
                                         {modelOperations[model.id]
-                                          ? "削除中..."
-                                          : "削除"}
+                                          ? "Deleting..."
+                                          : "Delete"}
                                       </button>
                                     </>
                                   ) : (
@@ -1896,9 +1934,9 @@ function App() {
                                     >
                                       {modelOperations[model.id]
                                         ? progress?.status === "downloading"
-                                          ? "ダウンロード中..."
-                                          : "インストール中..."
-                                        : "インストール"}
+                                          ? "Downloading..."
+                                          : "Installing..."
+                                        : "Install"}
                                     </button>
                                   )}
                                 </div>
@@ -1914,13 +1952,13 @@ function App() {
 
               <details className="collapse collapse-arrow bg-base-200/50 border border-base-300">
                 <summary className="collapse-title text-sm font-semibold">
-                  マイク設定
+                  Microphone Settings
                 </summary>
                 <div className="collapse-content">
                   <div className="space-y-4">
                     <div className="form-control">
                       <label className="label">
-                        <span className="label-text">入力デバイス</span>
+                        <span className="label-text">Input Device</span>
                       </label>
                       <select
                         value={selectedAudioDevice}
@@ -1932,7 +1970,7 @@ function App() {
                         {audioDevices.map((device) => (
                           <option key={device.name} value={device.name}>
                             {device.name}
-                            {device.is_default ? " (デフォルト)" : ""}
+                            {device.is_default ? " (default)" : ""}
                           </option>
                         ))}
                       </select>
@@ -1943,12 +1981,12 @@ function App() {
 
               <details className="collapse collapse-arrow bg-base-200/50 border border-base-300">
                 <summary className="collapse-title text-sm font-semibold">
-                  録画・保存設定
+                  Recording & Save Settings
                 </summary>
                 <div className="collapse-content space-y-4">
                   <div className="form-control">
                     <label className="label cursor-pointer">
-                      <span className="label-text">録画/音声を保存</span>
+                      <span className="label-text">Save recording/audio</span>
                       <input
                         type="checkbox"
                         className="toggle toggle-primary"
@@ -1965,7 +2003,7 @@ function App() {
                   {recordingSaveEnabled && (
                     <div className="form-control">
                       <label className="label">
-                        <span className="label-text">保存先フォルダ</span>
+                        <span className="label-text">Destination Folder</span>
                       </label>
                       <input
                         type="text"
@@ -1982,7 +2020,7 @@ function App() {
                       />
                       <label className="label">
                         <span className="label-text-alt opacity-70">
-                          録画時はMP4、音声のみの場合はWAVファイルとして保存されます
+                          Saved as MP4 during screen recording, or WAV for audio-only capture.
                         </span>
                       </label>
                     </div>
@@ -1990,7 +2028,7 @@ function App() {
 
                   <div className="form-control">
                     <label className="label cursor-pointer">
-                      <span className="label-text">画面録画を有効化</span>
+                      <span className="label-text">Enable screen recording</span>
                       <input
                         type="checkbox"
                         className="toggle toggle-primary"
@@ -2002,7 +2040,7 @@ function App() {
                     </label>
                     <label className="label">
                       <span className="label-text-alt opacity-70">
-                        有効時は録画ボタンで画面+音声を録画、無効時は音声のみ保存
+                        When enabled, the recording button captures screen + audio; when disabled, only audio is saved.
                       </span>
                     </label>
                   </div>
@@ -2011,12 +2049,12 @@ function App() {
 
               <details className="collapse collapse-arrow bg-base-200/50 border border-base-300">
                 <summary className="collapse-title text-sm font-semibold">
-                  Whisper モデル設定
+                  Whisper Model Settings
                 </summary>
                 <div className="collapse-content space-y-4">
                   <div className="flex items-center justify-between">
                     <span className="label-text font-semibold">
-                      Whisper モデル設定
+                      Whisper Model Settings
                     </span>
                     <button
                       className={`btn btn-xs ${
@@ -2025,18 +2063,18 @@ function App() {
                       onClick={() => saveWhisperParams(whisperParams)}
                       disabled={isSavingWhisperParams}
                     >
-                      {isSavingWhisperParams ? "保存中..." : "保存"}
+                      {isSavingWhisperParams ? "Saving..." : "Save"}
                     </button>
                   </div>
 
                   <div className="space-y-2">
                     <label className="label">
                       <span className="label-text">
-                        コンテキスト長 (audio_ctx: {whisperParams.audioCtx})
+                        Context Length (audio_ctx: {whisperParams.audioCtx})
                       </span>
                     </label>
                     <p className="text-xs opacity-60">
-                      長くするほど過去の音声を参照できますが、計算量とメモリ使用量が増えます。
+                      Larger values reference more past audio but increase compute and memory usage.
                     </p>
                     <input
                       type="range"
@@ -2073,12 +2111,12 @@ function App() {
                   <div className="space-y-2">
                     <label className="label">
                       <span className="label-text">
-                        温度 (temperature:{" "}
+                        Temperature (temperature:{" "}
                         {whisperParams.temperature.toFixed(2)})
                       </span>
                     </label>
                     <p className="text-xs opacity-60">
-                      数値を上げると出力が多様になります。0に近いほど安定した結果になります。
+                      Higher values increase output diversity. Values close to 0 are more stable.
                     </p>
                     <input
                       type="range"
@@ -2116,12 +2154,12 @@ function App() {
 
               <details className="collapse collapse-arrow bg-base-200/50 border border-base-300">
                 <summary className="collapse-title text-sm font-semibold">
-                  ストリーミング設定
+                  Streaming Settings
                 </summary>
                 <div className="collapse-content space-y-4">
                   <div className="flex items-center justify-between">
                     <span className="label-text font-semibold">
-                      ストリーミング設定
+                      Streaming Settings
                     </span>
                     <button
                       className={`btn btn-xs ${
@@ -2130,18 +2168,18 @@ function App() {
                       onClick={() => saveStreamingConfig(streamingConfig)}
                       disabled={isSavingStreamingConfig}
                     >
-                      {isSavingStreamingConfig ? "保存中..." : "保存"}
+                      {isSavingStreamingConfig ? "Saving..." : "Save"}
                     </button>
                   </div>
 
                   <div className="space-y-2">
                     <label className="label">
                       <span className="label-text">
-                        VAD 閾値 ({streamingConfig.vadThreshold.toFixed(3)})
+                        VAD Threshold ({streamingConfig.vadThreshold.toFixed(3)})
                       </span>
                     </label>
                     <p className="text-xs opacity-60">
-                      数値が低いほど小さな声でも検知しやすく、高いほど大きな音しか検知しなくなります。
+                      Lower values detect quieter speech more easily; higher values require louder sound.
                     </p>
                     <input
                       type="range"
@@ -2175,10 +2213,10 @@ function App() {
 
                   <div className="space-y-2">
                     <label className="label">
-                      <span className="label-text">文字起こし間隔 (秒)</span>
+                      <span className="label-text">Transcription Interval (sec)</span>
                     </label>
                     <p className="text-xs opacity-60">
-                      短くすると小刻みに更新され、長くするとまとまった文章で届きます。
+                      Shorter intervals update more frequently; longer intervals return larger chunks.
                     </p>
                     <input
                       type="range"
@@ -2215,20 +2253,20 @@ function App() {
 
               {hasMicPermission === false && (
                 <div className="alert alert-warning">
-                  <span className="text-xs">⚠️ マイクの許可が必要です</span>
+                  <span className="text-xs">⚠️ Microphone permission is required</span>
                 </div>
               )}
 
               {!isInitialized && selectedModel && (
                 <div className="alert alert-info">
-                  <span className="text-xs">初期化中...</span>
+                  <span className="text-xs">Initializing...</span>
                 </div>
               )}
             </div>
 
             <div className="modal-action">
               <button className="btn" onClick={() => setShowSettings(false)}>
-                閉じる
+                Close
               </button>
             </div>
           </div>

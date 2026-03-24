@@ -75,7 +75,7 @@ pub(crate) fn emit_transcription_segment(
         source: source.clone(),
     };
 
-    // 録画録音中の場合、txtファイルに保存
+    // Save to a txt file while recording is active.
     let state = recording_state();
     let state_guard = state.lock();
     let recording_dir = if state_guard.is_recording {
@@ -349,7 +349,7 @@ pub(crate) fn handle_api_stream_failure(app_handle: &AppHandle, source: &str, er
     transcription::api_client::reset_all_connections(APP_HANDLE.get());
 
     let message = format!(
-        "API接続に{}回連続で失敗したため、Proモードをローカルモードに切り替えました。最後のエラー: {}",
+        "API connection failed {} times in a row, so Pro mode was switched to Local mode. Last error: {}",
         API_STREAM_FAILURE_LIMIT, err
     );
     let event = BackendErrorEvent {
@@ -633,17 +633,17 @@ pub(crate) async fn get_screen_recording_status_impl() -> Result<bool, String> {
 
 pub(crate) async fn get_supported_languages_impl() -> Result<Vec<(String, String)>, String> {
     Ok(vec![
-        ("auto".to_string(), "自動検出".to_string()),
-        ("ja".to_string(), "日本語".to_string()),
+        ("auto".to_string(), "Auto Detect".to_string()),
+        ("ja".to_string(), "Japanese".to_string()),
         ("en".to_string(), "English".to_string()),
-        ("zh".to_string(), "中文".to_string()),
-        ("ko".to_string(), "한국어".to_string()),
-        ("es".to_string(), "Español".to_string()),
-        ("fr".to_string(), "Français".to_string()),
-        ("de".to_string(), "Deutsch".to_string()),
-        ("it".to_string(), "Italiano".to_string()),
-        ("pt".to_string(), "Português".to_string()),
-        ("ru".to_string(), "Русский".to_string()),
+        ("zh".to_string(), "Chinese".to_string()),
+        ("ko".to_string(), "Korean".to_string()),
+        ("es".to_string(), "Spanish".to_string()),
+        ("fr".to_string(), "French".to_string()),
+        ("de".to_string(), "German".to_string()),
+        ("it".to_string(), "Italian".to_string()),
+        ("pt".to_string(), "Portuguese".to_string()),
+        ("ru".to_string(), "Russian".to_string()),
     ])
 }
 
