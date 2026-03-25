@@ -34,3 +34,4 @@ apps/desktop/src-tauri/gen/
 
 # Local agent/session artifacts
 artifacts/
+.worktrees/
