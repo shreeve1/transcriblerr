@@ -82,7 +82,7 @@ pub fn default_recording_state() -> RecordingState {
         vad_threshold: DEFAULT_VAD_THRESHOLD,
         partial_transcript_interval_samples: DEFAULT_PARTIAL_TRANSCRIPT_INTERVAL_SAMPLES,
         system_audio_enabled: false,
-        transcription_mode: "llm".to_string(),
+        transcription_mode: "local".to_string(),
         recording_save_enabled: false,
         screen_recording_enabled: false,
         screen_recording_active: false,

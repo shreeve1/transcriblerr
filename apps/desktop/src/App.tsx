@@ -85,13 +85,15 @@ interface WhisperParamsConfig {
   temperature: number;
 }
 
+type BackendMode = "local" | "openai";
+
 interface TranscriptionBackendConfig {
-  mode: "local" | "api";
+  mode: string;
 }
 
 interface BackendErrorEvent {
   message: string;
-  fallbackMode?: "local" | "api";
+  fallbackMode?: BackendMode;
 }
 
 interface ModelInstallProgressEvent {
@@ -258,6 +260,9 @@ const normalizeLanguageOptions = (
 ): [string, string][] =>
   languages.map(([code, name]) => [code, LANGUAGE_LABELS[code] ?? name]);
 
+const normalizeBackendMode = (mode: string): BackendMode =>
+  mode === "local" || mode === "legacy_ws" ? "local" : "openai";
+
 function App() {
   const [isMuted, setIsMuted] = useState(true);
   const [isInitialized, setIsInitialized] = useState(false);
@@ -315,9 +320,8 @@ function App() {
   const [summaryPanelText, setSummaryPanelText] = useState<string | null>(null);
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(true);
   const [theme, setTheme] = useState(localStorage.getItem("theme") || "light");
-  const [transcriptionMode, setTranscriptionMode] = useState<"local" | "api">(
-    "api",
-  );
+  const [transcriptionMode, setTranscriptionMode] =
+    useState<BackendMode>("local");
   const [copiedAllHistory, setCopiedAllHistory] = useState(false);
   const [voiceActivity, setVoiceActivity] = useState<VoiceActivityState>({
     user: { isActive: false, sessionId: null },
@@ -536,19 +540,20 @@ function App() {
       const config = await invoke<TranscriptionBackendConfig>(
         "get_transcription_backend_config",
       );
-      setTranscriptionMode(config.mode);
+      setTranscriptionMode(normalizeBackendMode(config.mode));
     } catch (err) {
       console.error("Failed to load transcription backend config:", err);
     }
   }, []);
 
   const saveTranscriptionBackendConfig = useCallback(
-    async (config: TranscriptionBackendConfig) => {
+    async (mode: BackendMode) => {
+      const backendMode = mode === "openai" ? "llm" : "local";
       try {
         await invoke("set_transcription_backend_config", {
-          config,
+          config: { mode: backendMode },
         });
-        setTranscriptionMode(config.mode);
+        setTranscriptionMode(mode);
       } catch (err) {
         console.error("Failed to save transcription backend config:", err);
         setError(
@@ -560,6 +565,15 @@ function App() {
     },
     [setError],
   );
+
+  const handleTranscriptionModeChange = async (nextMode: BackendMode) => {
+    if (nextMode === transcriptionMode) {
+      return;
+    }
+
+    finalizeAllInProgressMessages();
+    await saveTranscriptionBackendConfig(nextMode);
+  };
 
   const toggleRecording = async () => {
     if (isRecordingBusy) return;
@@ -1039,17 +1053,6 @@ function App() {
     }
   };
 
-  const handleTranscriptionModeChange = async (nextMode: "local" | "api") => {
-    if (nextMode === transcriptionMode) {
-      return;
-    }
-
-    finalizeAllInProgressMessages();
-    await saveTranscriptionBackendConfig({
-      mode: nextMode,
-    });
-  };
-
   const summarizeCurrentSession = async () => {
     if (isSummarizing) {
       return;
@@ -1462,7 +1465,7 @@ function App() {
   };
 
   const showUserActivityIndicator =
-    transcriptionMode !== "api" &&
+    transcriptionMode === "local" &&
     voiceActivity.user.isActive &&
     !transcriptions.some(
       (session) =>
@@ -1470,7 +1473,7 @@ function App() {
         session.messages.some((message) => !message.isFinal),
     );
   const showSystemActivityIndicator =
-    transcriptionMode !== "api" &&
+    transcriptionMode === "local" &&
     voiceActivity.system.isActive &&
     !transcriptions.some(
       (session) =>
@@ -1508,21 +1511,6 @@ function App() {
               <Copy className="w-4 h-4" />
             )}
           </button>
-        </div>
-
-        <div className="shrink-0 flex items-center gap-2">
-          <input
-            type="checkbox"
-            className="toggle toggle-primary toggle-sm"
-            checked={transcriptionMode === "api"}
-            onChange={(e) =>
-              void handleTranscriptionModeChange(
-                e.target.checked ? "api" : "local",
-              )
-            }
-            title="Toggle Pro mode"
-          />
-          <span className="text-xs font-semibold text-primary">Pro</span>
         </div>
 
         <button
@@ -2082,6 +2070,29 @@ function App() {
                           </option>
                         ))}
                       </select>
+                    </div>
+
+                    <div className="form-control">
+                      <label className="label">
+                        <span className="label-text">Transcription Backend</span>
+                      </label>
+                      <select
+                        value={transcriptionMode}
+                        onChange={(e) =>
+                          void handleTranscriptionModeChange(
+                            e.target.value as BackendMode,
+                          )
+                        }
+                        className="select select-bordered w-full"
+                      >
+                        <option value="local">Local (offline Whisper)</option>
+                        <option value="openai">OpenAI API</option>
+                      </select>
+                      <label className="label">
+                        <span className="label-text-alt opacity-70">
+                          Local mode needs an installed Whisper model. OpenAI mode uses LLM_* env vars.
+                        </span>
+                      </label>
                     </div>
                   </div>
                 </div>

@@ -5,11 +5,12 @@ use std::thread::{self, JoinHandle};
 use tauri::AppHandle;
 
 use crate::audio::state::{try_recording_state, RecordingState};
-use crate::emit_transcription_segment;
 use crate::emit_backend_error;
+use crate::emit_transcription_segment;
+use crate::whisper::WHISPER_CTX;
 
-use super::{TranscriptionCommand, TranscriptionSource};
 use super::llm_client;
+use super::{TranscriptionCommand, TranscriptionSource};
 
 pub fn spawn_transcription_worker(
     app_handle: AppHandle,
@@ -121,6 +122,7 @@ pub fn transcribe_and_emit_common(
     source: &str,
     message_id_counter: u64,
     transcribed_samples: usize,
+    transcription_mode: &str,
 ) -> Result<(usize, u64), String> {
     let mut next_message_id = message_id_counter;
 
@@ -130,7 +132,26 @@ pub fn transcribe_and_emit_common(
 
     let audio_to_transcribe = &audio_data[transcribed_samples..];
 
-    let text = llm_client::transcribe_audio_chunk(audio_to_transcribe, Some(language))?;
+    let text = if transcription_mode == "local" {
+        let ctx_lock = WHISPER_CTX
+            .get()
+            .ok_or_else(|| {
+                "Whisper not initialized. Install/select a local model first.".to_string()
+            })?
+            .clone();
+        let ctx_guard = ctx_lock
+            .lock()
+            .map_err(|_| "Failed to lock Whisper context".to_string())?;
+        let ctx = ctx_guard
+            .as_ref()
+            .ok_or_else(|| "Whisper context not available".to_string())?;
+
+        ctx.transcribe_with_language(audio_to_transcribe, language)
+            .map_err(|e| format!("Local transcription failed: {}", e))?
+    } else {
+        llm_client::transcribe_audio_chunk(audio_to_transcribe, Some(language))?
+    };
+
     if text.trim().is_empty() {
         return Ok((audio_data.len(), next_message_id));
     }
@@ -159,17 +180,18 @@ fn transcribe_and_emit(
     let state =
         try_recording_state().ok_or_else(|| "Recording state not initialized".to_string())?;
 
-    let (lang, source_state) = {
+    let (lang, source_state, transcription_mode) = {
         let state_guard = state.lock();
         let lang = language
             .clone()
             .or_else(|| state_guard.language.clone())
-            .unwrap_or_else(|| "ja".to_string());
+            .unwrap_or_else(|| "en".to_string());
         let source_state = state_guard.transcription_state(source).clone();
-        (lang, source_state)
+        let transcription_mode = state_guard.transcription_mode.clone();
+        (lang, source_state, transcription_mode)
     };
 
-    let (new_transcribed_samples, next_message_id) = transcribe_and_emit_common(
+    let result = transcribe_and_emit_common(
         audio_data,
         &lang,
         source_state.session_id_counter,
@@ -178,20 +200,38 @@ fn transcribe_and_emit(
         source.event_source(),
         source_state.message_id_counter,
         source_state.transcribed_samples,
-    )?;
+        &transcription_mode,
+    );
 
     {
         let mut state_guard = state.lock();
         let source_state_mut = state_guard.transcription_state_mut(source);
 
-        if is_final {
-            source_state_mut.session_id_counter =
-                source_state_mut.session_id_counter.wrapping_add(1);
-            source_state_mut.message_id_counter = 0;
-            source_state_mut.transcribed_samples = 0;
-        } else {
-            source_state_mut.transcribed_samples = new_transcribed_samples;
-            source_state_mut.message_id_counter = next_message_id;
+        match result {
+            Ok((new_transcribed_samples, next_message_id)) => {
+                if is_final {
+                    source_state_mut.session_id_counter =
+                        source_state_mut.session_id_counter.wrapping_add(1);
+                    source_state_mut.message_id_counter = 0;
+                    source_state_mut.transcribed_samples = 0;
+                } else {
+                    source_state_mut.transcribed_samples = new_transcribed_samples;
+                    source_state_mut.message_id_counter = next_message_id;
+                }
+            }
+            Err(ref err) => {
+                // Keep session state healthy even when a final chunk fails.
+                // Otherwise stale transcribed_samples/session_id can poison
+                // subsequent chunks and make streaming appear to "lose track".
+                if is_final {
+                    source_state_mut.session_id_counter =
+                        source_state_mut.session_id_counter.wrapping_add(1);
+                    source_state_mut.message_id_counter = 0;
+                    source_state_mut.transcribed_samples = 0;
+                }
+
+                return Err(err.clone());
+            }
         }
     }
 

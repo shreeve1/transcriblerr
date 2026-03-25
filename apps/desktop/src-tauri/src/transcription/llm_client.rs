@@ -1,11 +1,13 @@
 use std::time::Duration;
 
 use hound::{SampleFormat, WavSpec, WavWriter};
+use log::warn;
 use reqwest::blocking::{multipart, Client};
 use serde_json::Value;
 
 const DEFAULT_LLM_API_BASE_URL: &str = "http://localhost:8317/v1";
 const DEFAULT_LLM_TIMEOUT_SECS: u64 = 45;
+const MIN_LLM_CHUNK_SAMPLES: usize = 800; // 50ms at 16kHz
 
 fn llm_api_base_url() -> String {
     std::env::var("LLM_API_BASE_URL")
@@ -111,6 +113,12 @@ pub fn transcribe_audio_chunk(
         return Ok(String::new());
     }
 
+    // Some OpenAI-compatible backends reject ultra-short chunks as
+    // "corrupted or unsupported". Skip those tiny fragments.
+    if audio_16k_f32.len() < MIN_LLM_CHUNK_SAMPLES {
+        return Ok(String::new());
+    }
+
     let base_url = llm_api_base_url();
     let model = llm_transcription_model()?;
     let wav_bytes = pcm_f32_to_wav_bytes(audio_16k_f32)?;
@@ -152,6 +160,20 @@ pub fn transcribe_audio_chunk(
     if !status.is_success() {
         if let Ok(json) = serde_json::from_str::<Value>(&body) {
             let detail = parse_error_text(&json).unwrap_or(body.clone());
+
+            if status.as_u16() == 400 {
+                let normalized = detail.to_lowercase();
+                if normalized.contains("corrupted") || normalized.contains("unsupported") {
+                    warn!(
+                        "LLM backend rejected audio chunk as unsupported/corrupted ({} samples, {}): {}",
+                        audio_16k_f32.len(),
+                        status.as_u16(),
+                        detail
+                    );
+                    return Ok(String::new());
+                }
+            }
+
             return Err(format!(
                 "LLM transcription request failed with status {}: {}",
                 status.as_u16(),

@@ -382,24 +382,15 @@ pub(crate) async fn set_transcription_backend_config_impl(
 ) -> Result<(), String> {
     let mode = config.mode.trim().to_lowercase();
     let normalized_mode = match mode.as_str() {
-        "llm" => "llm".to_string(),
-        "api" => "llm".to_string(),
-        "legacy_ws" => "legacy_ws".to_string(),
-        "local" => "legacy_ws".to_string(),
+        "local" | "legacy_ws" => "local".to_string(),
+        "llm" | "api" | "openai" => "llm".to_string(),
         _ => {
             return Err(
-                "mode must be one of 'llm', 'legacy_ws' (legacy aliases: 'api', 'local')"
+                "mode must be one of 'local' or 'llm' (aliases: 'legacy_ws', 'api', 'openai')"
                     .to_string(),
             )
         }
     };
-
-    if normalized_mode == "legacy_ws" {
-        return Err(
-            "legacy_ws mode is disabled in this build. Use 'llm' mode for transcription."
-                .to_string(),
-        );
-    }
 
     let state = recording_state();
     let mut state_guard = state.lock();
