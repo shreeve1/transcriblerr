@@ -1,13 +1,9 @@
 # Local Whisper
 
-[🇯🇵 日本語版 README](./README.ja.md)
+[README](./README.en.md)
 
 Local Whisper is a high-accuracy, low-latency transcription app that runs entirely on Apple Silicon (M1/M2/M3).
 It captures both microphone input and system audio (e.g., web meetings, YouTube) without sending data to the cloud.
-
-
-
-https://github.com/user-attachments/assets/f6268cb3-1534-42b4-9070-f0ae29a6dcf0
 
 
 
