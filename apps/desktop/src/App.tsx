@@ -86,7 +86,7 @@ interface WhisperParamsConfig {
 }
 
 interface TranscriptionBackendConfig {
-  mode: "local" | "api";
+  mode: "llm" | "legacy_ws";
 }
 
 interface SummaryResponse {
@@ -97,7 +97,6 @@ interface SummaryResponse {
 
 interface BackendErrorEvent {
   message: string;
-  fallbackMode?: "local" | "api";
 }
 
 interface ModelInstallProgressEvent {
@@ -134,7 +133,7 @@ const normalizeLanguageOptions = (
 
 function App() {
   const [isMuted, setIsMuted] = useState(true);
-  const [isInitialized, setIsInitialized] = useState(false);
+  const [, setIsInitialized] = useState(false);
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [selectedLanguage, setSelectedLanguage] = useState<string>("en");
@@ -189,8 +188,8 @@ function App() {
   const [summaryPanelText, setSummaryPanelText] = useState<string | null>(null);
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(true);
   const [theme, setTheme] = useState(localStorage.getItem("theme") || "light");
-  const [transcriptionMode, setTranscriptionMode] = useState<"local" | "api">(
-    "local",
+  const [transcriptionMode, setTranscriptionMode] = useState<"llm" | "legacy_ws">(
+    "llm",
   );
   const [copiedAllHistory, setCopiedAllHistory] = useState(false);
   const [voiceActivity, setVoiceActivity] = useState<VoiceActivityState>({
@@ -212,9 +211,6 @@ function App() {
     selectedModelInfo?.name?.trim() ||
     selectedModelInfo?.path ||
     selectedModel;
-  const needsModelSetup =
-    transcriptionMode === "local" && availableModels.length === 0;
-
   const upsertTranscriptionSegment = useCallback(
     (segment: TranscriptionSegment) => {
       setTranscriptions((prev) => {
@@ -416,25 +412,6 @@ function App() {
     }
   }, []);
 
-  const saveTranscriptionBackendConfig = useCallback(
-    async (config: TranscriptionBackendConfig) => {
-      try {
-        await invoke("set_transcription_backend_config", {
-          config,
-        });
-        setTranscriptionMode(config.mode);
-      } catch (err) {
-        console.error("Failed to save transcription backend config:", err);
-        setError(
-          `Transcription backend settings error: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      }
-    },
-    [setError],
-  );
-
   const toggleRecording = async () => {
     if (isRecordingBusy) return;
 
@@ -443,15 +420,6 @@ function App() {
         setError("Enable recording save and set a destination folder.");
         return;
       }
-      if (
-        transcriptionMode === "local" &&
-        !screenRecordingEnabled &&
-        !isInitialized
-      ) {
-        setError("Initialize a model before starting recording.");
-        return;
-      }
-
       // Clear existing transcription history and reset for a new recording.
       setTranscriptions([]);
       setPlayingSessionKey(null);
@@ -703,10 +671,7 @@ function App() {
         if (payload.message) {
           setError(payload.message);
         }
-        if (payload.fallbackMode === "local") {
-          finalizeAllInProgressMessages();
-          setTranscriptionMode("local");
-        }
+        finalizeAllInProgressMessages();
       },
     );
 
@@ -913,19 +878,8 @@ function App() {
     }
   };
 
-  const handleTranscriptionModeChange = async (nextMode: "local" | "api") => {
-    if (nextMode === transcriptionMode) {
-      return;
-    }
-
-    finalizeAllInProgressMessages();
-    await saveTranscriptionBackendConfig({
-      mode: nextMode,
-    });
-  };
-
   const summarizeCurrentSession = async () => {
-    if (isSummarizing || transcriptionMode !== "api") {
+    if (isSummarizing || transcriptionMode !== "llm") {
       return;
     }
 
@@ -1096,12 +1050,6 @@ function App() {
     }
 
     setIsMicBusy(true);
-
-    if (transcriptionMode === "local" && !isInitialized) {
-      setError("Model is initializing...");
-      setIsMicBusy(false);
-      return;
-    }
 
     try {
       await invoke("start_mic", {
@@ -1352,7 +1300,7 @@ function App() {
   };
 
   const showUserActivityIndicator =
-    transcriptionMode !== "api" &&
+    transcriptionMode === "llm" &&
     voiceActivity.user.isActive &&
     !transcriptions.some(
       (session) =>
@@ -1360,7 +1308,7 @@ function App() {
         session.messages.some((message) => !message.isFinal),
     );
   const showSystemActivityIndicator =
-    transcriptionMode !== "api" &&
+    transcriptionMode === "llm" &&
     voiceActivity.system.isActive &&
     !transcriptions.some(
       (session) =>
@@ -1400,22 +1348,7 @@ function App() {
           </button>
         </div>
 
-        <div className="shrink-0 flex items-center gap-2">
-          <input
-            type="checkbox"
-            className="toggle toggle-primary toggle-sm"
-            checked={transcriptionMode === "api"}
-            onChange={(e) =>
-              void handleTranscriptionModeChange(
-                e.target.checked ? "api" : "local",
-              )
-            }
-            title="Toggle Pro mode"
-          />
-          <span className="text-xs font-semibold text-primary">Pro</span>
-        </div>
-
-        {transcriptionMode === "api" && (
+        {transcriptionMode === "llm" && (
           <button
             className={`btn btn-ghost btn-sm ${isSummarizing ? "btn-disabled" : ""}`}
             onClick={summarizeCurrentSession}
@@ -1448,16 +1381,12 @@ function App() {
           <div className="join">
             <button
               className={`join-item btn btn-sm ${
-                transcriptionMode === "local" && !isInitialized
-                  ? "btn-disabled"
-                  : isMuted
+                isMuted
                     ? "btn-ghost"
                     : "btn-primary"
               }`}
               onClick={toggleMute}
-              disabled={
-                isMicBusy || (transcriptionMode === "local" && !isInitialized)
-              }
+              disabled={isMicBusy}
               title={
                 isMicBusy
                   ? "Connecting..."
@@ -1555,91 +1484,7 @@ function App() {
               </div>
             )}
 
-            {needsModelSetup ? (
-              <div className="max-w-3xl mx-auto border border-base-300 rounded-xl p-4 bg-base-200/50 space-y-4">
-                <div>
-                  <p className="text-sm font-semibold">
-                    Install a Whisper model first
-                  </p>
-                  <p className="text-xs opacity-70 mt-1">
-                    In Local mode, microphone transcription cannot start without a model. Select one below and install it.
-                  </p>
-                </div>
-
-                {isLoadingRemoteModels ? (
-                  <div className="flex items-center gap-2 text-sm">
-                    <span className="loading loading-spinner loading-xs"></span>
-                    Loading model list...
-                  </div>
-                ) : remoteModels.length === 0 ? (
-                  <p className="text-sm opacity-70">
-                    Failed to fetch available models. Reload from Settings (Model Settings).
-                  </p>
-                ) : (
-                  <div className="space-y-3">
-                    {remoteModels.map((model) => {
-                      const progress = modelInstallProgress[model.id];
-                      const isInstalling = modelOperations[model.id];
-                      const showProgress =
-                        isInstalling && progress?.status === "downloading";
-                      return (
-                        <div
-                          key={model.id}
-                          className="border border-base-300 rounded-xl p-3 flex items-start justify-between gap-3"
-                        >
-                          <div>
-                            <p className="font-medium text-sm">{model.name}</p>
-                            <p className="text-xs opacity-70">
-                              {model.description}
-                            </p>
-                            <p className="text-xs opacity-60 mt-1">
-                              {formatModelSize(model.size)}
-                            </p>
-                            {showProgress && (
-                              <div className="mt-2 space-y-1">
-                                <progress
-                                  className="progress progress-primary w-40"
-                                  value={Math.max(
-                                    0,
-                                    Math.min(
-                                      100,
-                                      Number.isFinite(progress.percent)
-                                        ? progress.percent
-                                        : 0,
-                                    ),
-                                  )}
-                                  max={100}
-                                />
-                                <p className="text-[11px] opacity-70">
-                                  {formatInstallProgress(progress)}
-                                </p>
-                              </div>
-                            )}
-                          </div>
-                          <button
-                            className={`btn btn-xs ${model.installed ? "btn-outline" : "btn-primary"}`}
-                            onClick={() =>
-                              model.installed && model.path
-                                ? setSelectedModel(model.path)
-                                : handleInstallModel(model.id)
-                            }
-                            disabled={isInstalling}
-                          >
-                            {isInstalling
-                              ? progress?.status === "downloading"
-                                ? "Downloading..."
-                                : "Processing..."
-                              : model.installed
-                                ? "Use"
-                                : "Install"}
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            ) : transcriptions.length === 0 &&
+            {transcriptions.length === 0 &&
               !voiceActivity.user.isActive &&
               !voiceActivity.system.isActive ? (
               <div className="flex-1 flex flex-col items-center justify-center text-center text-base-content/30 min-h-[50vh]">
@@ -2257,11 +2102,6 @@ function App() {
                 </div>
               )}
 
-              {!isInitialized && selectedModel && (
-                <div className="alert alert-info">
-                  <span className="text-xs">Initializing...</span>
-                </div>
-              )}
             </div>
 
             <div className="modal-action">

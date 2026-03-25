@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod worker;
+pub mod llm_client;
 pub mod websocket_client;
 pub mod api_client;
 

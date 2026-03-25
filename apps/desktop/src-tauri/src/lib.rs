@@ -6,7 +6,7 @@ use once_cell::sync::OnceCell;
 use parking_lot::Mutex as ParkingMutex;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
@@ -34,8 +34,6 @@ use transcription::worker::stop_transcription_worker;
 static RECORDING_SAVE_PATH: OnceCell<Arc<ParkingMutex<Option<String>>>> = OnceCell::new();
 pub(crate) static APP_HANDLE: OnceCell<AppHandle> = OnceCell::new();
 static SHUTDOWN_CLEANED: AtomicBool = AtomicBool::new(false);
-static API_STREAM_FAILURE_STREAK: AtomicU32 = AtomicU32::new(0);
-const API_STREAM_FAILURE_LIMIT: u32 = 10;
 
 fn load_backend_env() {
     // Rust side does not auto-load .env; load common locations explicitly.
@@ -182,13 +180,6 @@ pub struct TranscriptionBackendConfig {
     pub mode: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct BackendErrorEvent {
-    message: String,
-    #[serde(rename = "fallbackMode", skip_serializing_if = "Option::is_none")]
-    fallback_mode: Option<String>,
-}
-
 pub(crate) async fn start_recording_impl(language: Option<String>) -> Result<(), String> {
     let state = try_recording_state().ok_or("Recording not initialized")?;
 
@@ -277,14 +268,7 @@ pub(crate) async fn stop_mic_impl() -> Result<(), String> {
 
     state_guard.is_muted = true;
 
-    if state_guard.transcription_mode != "api" {
-        finalize_active_session(&mut state_guard, "mic_stopped");
-    } else {
-        state_guard.session_audio.clear();
-        state_guard.session_samples = 0;
-        state_guard.last_partial_emit_samples = 0;
-        state_guard.last_voice_sample = None;
-    }
+    finalize_active_session(&mut state_guard, "mic_stopped");
     stop_transcription_worker(&mut state_guard);
     state_guard.vad_state = None;
 
@@ -320,53 +304,19 @@ pub(crate) fn emit_voice_activity_event(
     }
 }
 
-pub(crate) fn mark_api_stream_success() {
-    if API_STREAM_FAILURE_STREAK.load(Ordering::Relaxed) != 0 {
-        API_STREAM_FAILURE_STREAK.store(0, Ordering::Relaxed);
-    }
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct BackendErrorEvent {
+    message: String,
 }
 
-pub(crate) fn handle_api_stream_failure(app_handle: &AppHandle, source: &str, err: &str) {
-    let failures = API_STREAM_FAILURE_STREAK.fetch_add(1, Ordering::Relaxed) + 1;
-    if failures < API_STREAM_FAILURE_LIMIT {
-        return;
-    }
-
-    let state = recording_state();
-    let mut state_guard = state.lock();
-    if state_guard.transcription_mode != "api" {
-        return;
-    }
-
-    state_guard.transcription_mode = "local".to_string();
-    if !state_guard.is_muted {
-        finalize_active_session(&mut state_guard, "api_stream_failure_fallback");
-    }
-    drop(state_guard);
-
-    API_STREAM_FAILURE_STREAK.store(0, Ordering::Relaxed);
-    system_audio::finalize_active_system_audio_session("api_stream_failure_fallback");
-    transcription::api_client::reset_all_connections(APP_HANDLE.get());
-
-    let message = format!(
-        "API connection failed {} times in a row, so Pro mode was switched to Local mode. Last error: {}",
-        API_STREAM_FAILURE_LIMIT, err
-    );
+pub(crate) fn emit_backend_error(app_handle: &AppHandle, message: impl Into<String>) {
     let event = BackendErrorEvent {
-        message,
-        fallback_mode: Some("local".to_string()),
+        message: message.into(),
     };
 
     if let Err(emit_err) = app_handle.emit("backend-error", &event) {
         error!("Failed to emit backend-error event: {}", emit_err);
     }
-
-    error!(
-        "Switched transcription backend to local after {} consecutive API failures (source: {}, last_error: {})",
-        API_STREAM_FAILURE_LIMIT,
-        source,
-        err
-    );
 }
 
 pub(crate) async fn list_audio_devices_impl() -> Result<Vec<AudioDevice>, String> {
@@ -431,34 +381,37 @@ pub(crate) async fn set_transcription_backend_config_impl(
     config: TranscriptionBackendConfig,
 ) -> Result<(), String> {
     let mode = config.mode.trim().to_lowercase();
-    if mode != "local" && mode != "api" {
-        return Err("mode must be either 'local' or 'api'".to_string());
+    let normalized_mode = match mode.as_str() {
+        "llm" => "llm".to_string(),
+        "api" => "llm".to_string(),
+        "legacy_ws" => "legacy_ws".to_string(),
+        "local" => "legacy_ws".to_string(),
+        _ => {
+            return Err(
+                "mode must be one of 'llm', 'legacy_ws' (legacy aliases: 'api', 'local')"
+                    .to_string(),
+            )
+        }
+    };
+
+    if normalized_mode == "legacy_ws" {
+        return Err(
+            "legacy_ws mode is disabled in this build. Use 'llm' mode for transcription."
+                .to_string(),
+        );
     }
 
     let state = recording_state();
     let mut state_guard = state.lock();
     let previous_mode = state_guard.transcription_mode.clone();
-    let switched_local_to_api = previous_mode == "local" && mode == "api";
-
-    if switched_local_to_api {
-        if !state_guard.is_muted {
-            finalize_active_session(&mut state_guard, "mode_switch_local_to_api");
-        }
-    }
-
-    state_guard.transcription_mode = mode.clone();
+    state_guard.transcription_mode = normalized_mode.clone();
     drop(state_guard);
-    API_STREAM_FAILURE_STREAK.store(0, Ordering::Relaxed);
 
-    if switched_local_to_api {
-        system_audio::finalize_active_system_audio_session("mode_switch_local_to_api");
+    if previous_mode != normalized_mode {
+        system_audio::finalize_active_system_audio_session("mode_switch");
     }
 
-    if previous_mode != mode {
-        transcription::api_client::reset_all_connections(APP_HANDLE.get());
-    }
-
-    info!("Updated transcription backend config: mode={}", mode);
+    info!("Updated transcription backend config: mode={}", normalized_mode);
 
     Ok(())
 }

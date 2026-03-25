@@ -2,7 +2,6 @@ use crate::audio::{
     try_recording_state, RecordingState, SILENCE_TIMEOUT_SAMPLES, VAD_CHUNK_SIZE,
     VAD_POST_BUFFER_SAMPLES, VAD_PRE_BUFFER_SAMPLES, VAD_SAMPLE_RATE,
 };
-use crate::transcription::api_client::stream_audio_chunk_and_emit;
 use crate::transcription::worker::queue_transcription_with_source;
 use crate::transcription::{spawn_transcription_worker, TranscriptionSource};
 use log::{error, info};
@@ -91,7 +90,6 @@ extern "C" fn audio_callback(samples: *const f32, count: c_int) {
         let app_handle_ptr = addr_of!(APP_HANDLE);
         let app_handle = (*app_handle_ptr).as_ref();
         let language = state.language.clone();
-        let api_stream_mode = state.transcription_mode == "api";
         let session_id_counter = state
             .transcription_state(TranscriptionSource::System)
             .session_id_counter;
@@ -107,46 +105,14 @@ extern "C" fn audio_callback(samples: *const f32, count: c_int) {
             return;
         }
 
-        if api_stream_mode {
-            if !session.session_audio.is_empty() {
-                finalize_system_audio_session(
-                    session,
-                    "api_connected_switch",
-                    app_handle,
-                    language.as_deref(),
-                );
-            }
-            if let Some(app) = app_handle {
-                let now = std::time::Instant::now();
-                if now.duration_since(session.last_vad_event_time).as_millis() >= 500 {
-                    super::emit_voice_activity_event(app, "system", true, session_id_counter);
-                    session.last_vad_event_time = now;
-                }
-
-                if let Err(err) = stream_audio_chunk_and_emit(
-                    slice,
-                    language.as_deref().unwrap_or("ja"),
-                    TranscriptionSource::System,
-                    session_id_counter,
-                    false,
-                    app,
-                ) {
-                    error!("Failed to stream system audio chunk to API: {}", err);
-                    crate::handle_api_stream_failure(app, "system", &err);
-                } else {
-                    crate::mark_api_stream_success();
-                }
-            }
-        } else {
-            for &sample in slice {
-                process_system_audio_sample_local(
-                    session,
-                    sample,
-                    app_handle,
-                    language.as_deref(),
-                    session_id_counter,
-                );
-            }
+        for &sample in slice {
+            process_system_audio_sample_local(
+                session,
+                sample,
+                app_handle,
+                language.as_deref(),
+                session_id_counter,
+            );
         }
     }
 }
@@ -410,12 +376,6 @@ pub fn stop_system_audio_capture(state: Arc<ParkingMutex<RecordingState>>) -> Re
     unsafe {
         // Flush pending local/system session before tearing down globals.
         finalize_active_system_audio_session("system_audio_capture_stopped");
-        // Flush pending API websocket buffers and force-finalize remaining segments.
-        let app_handle = {
-            let app_handle_ptr = addr_of!(APP_HANDLE);
-            (*app_handle_ptr).clone()
-        };
-        crate::transcription::api_client::reset_all_connections(app_handle.as_ref());
 
         let result = system_audio_stop();
 
