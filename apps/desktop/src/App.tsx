@@ -96,6 +96,19 @@ interface BackendErrorEvent {
   fallbackMode?: BackendMode;
 }
 
+interface SummarizationConfig {
+  enabled: boolean;
+  apiBaseUrl: string;
+  model: string;
+  hasApiKey: boolean;
+}
+
+interface SummarizationConfigUpdate {
+  enabled: boolean;
+  apiBaseUrl: string;
+  model: string;
+}
+
 interface ModelInstallProgressEvent {
   modelId: string;
   filename: string;
@@ -263,6 +276,20 @@ const normalizeLanguageOptions = (
 const normalizeBackendMode = (mode: string): BackendMode =>
   mode === "local" || mode === "legacy_ws" ? "local" : "openai";
 
+const summaryErrorCode = (message: string): string | null => {
+  const match = message.match(/^(SUMMARY_[A-Z_]+):/);
+  return match ? match[1] : null;
+};
+
+const isSilentSummaryFallback = (message: string): boolean => {
+  const code = summaryErrorCode(message);
+  return (
+    code === "SUMMARY_UNCONFIGURED" ||
+    code === "SUMMARY_TRANSIENT" ||
+    code === "SUMMARY_PROVIDER"
+  );
+};
+
 function App() {
   const [isMuted, setIsMuted] = useState(true);
   const [isInitialized, setIsInitialized] = useState(false);
@@ -319,6 +346,16 @@ function App() {
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [summaryPanelText, setSummaryPanelText] = useState<string | null>(null);
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(true);
+  const [summarySource, setSummarySource] = useState<"AI" | "Local" | null>(
+    null,
+  );
+  const [summaryConfig, setSummaryConfig] = useState<SummarizationConfig>({
+    enabled: false,
+    apiBaseUrl: "http://localhost:8317/v1",
+    model: "gpt-4o-mini",
+    hasApiKey: false,
+  });
+  const [isSavingSummaryConfig, setIsSavingSummaryConfig] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem("theme") || "light");
   const [transcriptionMode, setTranscriptionMode] =
     useState<BackendMode>("local");
@@ -332,6 +369,8 @@ function App() {
   const transcriptionSuppressedForPlaybackRef = useRef(false);
   const copyFeedbackTimeoutRef = useRef<number | null>(null);
   const copyAllFeedbackTimeoutRef = useRef<number | null>(null);
+  const streamingAutosaveTimeoutRef = useRef<number | null>(null);
+  const lastAppliedStreamingConfigRef = useRef<StreamingConfig | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const previousMessageCountRef = useRef(0);
   const previousScrollHeightRef = useRef(0);
@@ -458,6 +497,7 @@ function App() {
     try {
       const config = await invoke<StreamingConfig>("get_streaming_config");
       setStreamingConfig(config);
+      lastAppliedStreamingConfigRef.current = config;
       localStorage.setItem("vadThreshold", config.vadThreshold.toString());
       localStorage.setItem(
         "partialIntervalSeconds",
@@ -475,14 +515,20 @@ function App() {
         await invoke("set_streaming_config", {
           config,
         });
-        setStreamingConfig(config);
-        localStorage.setItem("vadThreshold", config.vadThreshold.toString());
-        if (config.partialIntervalSeconds) {
+
+        // Read back from backend so UI reflects the actual applied values.
+        const appliedConfig = await invoke<StreamingConfig>("get_streaming_config");
+        setStreamingConfig(appliedConfig);
+        lastAppliedStreamingConfigRef.current = appliedConfig;
+
+        localStorage.setItem("vadThreshold", appliedConfig.vadThreshold.toString());
+        if (appliedConfig.partialIntervalSeconds) {
           localStorage.setItem(
             "partialIntervalSeconds",
-            config.partialIntervalSeconds.toString(),
+            appliedConfig.partialIntervalSeconds.toString(),
           );
         }
+
       } catch (err) {
         console.error("Failed to save streaming config:", err);
         setError(
@@ -496,6 +542,49 @@ function App() {
     },
     [setError],
   );
+
+  useEffect(() => {
+    if (!showSettings || isSavingStreamingConfig) {
+      return;
+    }
+
+    const lastApplied = lastAppliedStreamingConfigRef.current;
+    if (!lastApplied) {
+      return;
+    }
+
+    const hasChanged =
+      Math.abs(streamingConfig.vadThreshold - lastApplied.vadThreshold) > 0.0001 ||
+      Math.abs(
+        streamingConfig.partialIntervalSeconds -
+          lastApplied.partialIntervalSeconds,
+      ) > 0.0001;
+
+    if (!hasChanged) {
+      return;
+    }
+
+    if (streamingAutosaveTimeoutRef.current) {
+      window.clearTimeout(streamingAutosaveTimeoutRef.current);
+    }
+
+    streamingAutosaveTimeoutRef.current = window.setTimeout(() => {
+      streamingAutosaveTimeoutRef.current = null;
+      void saveStreamingConfig(streamingConfig);
+    }, 500);
+
+    return () => {
+      if (streamingAutosaveTimeoutRef.current) {
+        window.clearTimeout(streamingAutosaveTimeoutRef.current);
+        streamingAutosaveTimeoutRef.current = null;
+      }
+    };
+  }, [
+    isSavingStreamingConfig,
+    saveStreamingConfig,
+    showSettings,
+    streamingConfig,
+  ]);
 
   const loadWhisperParams = useCallback(async () => {
     try {
@@ -546,6 +635,44 @@ function App() {
     }
   }, []);
 
+  const loadSummarizationConfig = useCallback(async () => {
+    try {
+      const config = await invoke<SummarizationConfig>(
+        "get_summarization_config",
+      );
+      setSummaryConfig(config);
+    } catch (err) {
+      console.error("Failed to load summarization config:", err);
+    }
+  }, []);
+
+  const saveSummarizationConfig = useCallback(async () => {
+    setIsSavingSummaryConfig(true);
+    try {
+      const payload: SummarizationConfigUpdate = {
+        enabled: summaryConfig.enabled,
+        apiBaseUrl: summaryConfig.apiBaseUrl,
+        model: summaryConfig.model,
+      };
+
+      await invoke<SummarizationConfig>("set_summarization_config", {
+        config: payload,
+      });
+
+      await loadSummarizationConfig();
+      setError("");
+    } catch (err) {
+      console.error("Failed to save summarization config:", err);
+      setError(
+        `Summarization settings error: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    } finally {
+      setIsSavingSummaryConfig(false);
+    }
+  }, [loadSummarizationConfig, summaryConfig, setError]);
+
   const saveTranscriptionBackendConfig = useCallback(
     async (mode: BackendMode) => {
       const backendMode = mode === "openai" ? "llm" : "local";
@@ -592,8 +719,7 @@ function App() {
         return;
       }
 
-      // Clear existing transcription history and reset for a new recording.
-      setTranscriptions([]);
+      // Preserve existing transcription history when starting system recording.
       setPlayingSessionKey(null);
       if (currentAudioSource) {
         currentAudioSource.stop();
@@ -809,12 +935,6 @@ function App() {
       (event) => {
         const segment = event.payload;
 
-        console.log(
-          "[App] Received transcription segment:",
-          segment,
-          "audioDataLen=",
-          segment.audioData?.length ?? 0,
-        );
         upsertTranscriptionSegment(segment);
       },
     );
@@ -823,7 +943,6 @@ function App() {
       "voice-activity",
       (event) => {
         const { source, isActive, sessionId } = event.payload;
-        console.log("Voice activity event:", event.payload);
         setVoiceActivity((prev) => {
           return {
             ...prev,
@@ -871,6 +990,7 @@ function App() {
     loadRecordingSaveConfig();
     loadScreenRecordingConfig();
     loadTranscriptionBackendConfig();
+    loadSummarizationConfig();
 
     return () => {
       unlistenTranscription.then((fn) => fn());
@@ -883,6 +1003,7 @@ function App() {
     loadStreamingConfig,
     loadWhisperParams,
     loadTranscriptionBackendConfig,
+    loadSummarizationConfig,
     upsertTranscriptionSegment,
   ]);
 
@@ -1078,14 +1199,49 @@ function App() {
 
     setIsSummarizing(true);
     try {
-      const summary = summarizeLocally(allMessages);
-      if (!summary.trim()) {
-        throw new Error("Unable to produce a local summary");
+      const transcript = allMessages
+        .map(
+          (message) =>
+            `[${sourceLabel(message.source)}] ${normalizeMessageText(message.text)}`,
+        )
+        .join("\n");
+
+      let summary: string | null = null;
+      let usedSource: "AI" | "Local" = "AI";
+
+      try {
+        summary = await invoke<string>("summarize_transcript", {
+          transcript,
+          language: selectedLanguage,
+        });
+        if (summary.trim()) {
+          setSummarySource("AI");
+          usedSource = "AI";
+        }
+      } catch (aiErr) {
+        const aiMessage = aiErr instanceof Error ? aiErr.message : String(aiErr);
+        const fallbackSummary = summarizeLocally(allMessages);
+        if (!fallbackSummary.trim()) {
+          throw new Error(aiMessage);
+        }
+        summary = fallbackSummary;
+        setSummarySource("Local");
+        usedSource = "Local";
+
+        if (!isSilentSummaryFallback(aiMessage)) {
+          setError(`Summary provider error: ${aiMessage}`);
+        }
+      }
+
+      if (!summary?.trim()) {
+        throw new Error("Unable to produce a summary");
       }
 
       setSummaryPanelText(summary.trim());
       setIsSummaryExpanded(true);
-      setError("");
+      if (usedSource !== "Local") {
+        setError("");
+      }
     } catch (err) {
       console.error("Failed to summarize conversation:", err);
       setError(
@@ -1371,6 +1527,9 @@ function App() {
       if (copyAllFeedbackTimeoutRef.current) {
         window.clearTimeout(copyAllFeedbackTimeoutRef.current);
       }
+      if (streamingAutosaveTimeoutRef.current) {
+        window.clearTimeout(streamingAutosaveTimeoutRef.current);
+      }
     };
   }, []);
 
@@ -1603,6 +1762,9 @@ function App() {
             <div className="bg-base-200 border border-base-300 rounded-xl shadow-sm">
               <div className="px-3 py-2 flex items-center justify-between">
                 <span className="text-sm font-medium">Summary</span>
+                {summarySource && (
+                  <span className="badge badge-ghost badge-sm">{summarySource}</span>
+                )}
                 <div className="flex items-center gap-1">
                   <button
                     className="btn btn-ghost btn-xs btn-square"
@@ -1757,36 +1919,37 @@ function App() {
                       ? "chat-bubble-primary"
                       : "chat-bubble-secondary";
                   const sessionText = session.messages
-                    .map((message) => message.text)
-                    .join("\n");
+                    .map((message) => message.text.trim())
+                    .filter((text) => text.length > 0)
+                    .join(" ")
+                    .replace(/\s+/g, " ")
+                    .trim();
                   const sessionAudio = session.messages
                     .map(
                       (message) => session.audioChunks[message.messageId] || [],
                     )
                     .flat();
+                  const hasInProgressMessage = session.messages.some(
+                    (message) => !message.isFinal,
+                  );
+
                   return (
                     <div
                       key={session.sessionKey}
                       className={`chat ${alignment}`}
                     >
-                      {session.messages.map((message, idx) => {
-                        const messageKey = `${session.sessionKey}-${message.messageId}`;
-                        return (
-                          <div
-                            key={messageKey}
-                            className={`chat-bubble text-sm ${bubbleColor} ${
-                              message.isFinal ? "" : "opacity-70"
-                            } ${idx > 0 ? "mt-2" : ""}`}
-                          >
-                            <span className="flex-1 text-left">
-                              {message.text}
-                              {!message.isFinal && (
-                                <TypingDots inline className="ml-1" />
-                              )}
-                            </span>
-                          </div>
-                        );
-                      })}
+                      <div
+                        className={`chat-bubble text-sm ${bubbleColor} ${
+                          hasInProgressMessage ? "opacity-70" : ""
+                        }`}
+                      >
+                        <span className="flex-1 text-left">
+                          {sessionText}
+                          {hasInProgressMessage && (
+                            <TypingDots inline className="ml-1" />
+                          )}
+                        </span>
+                      </div>
                       <div className="chat-footer opacity-50 flex justify-between items-center">
                         <button
                           onClick={() =>
@@ -2094,6 +2257,91 @@ function App() {
                         </span>
                       </label>
                     </div>
+                  </div>
+                </div>
+              </details>
+
+              <details className="collapse collapse-arrow bg-base-200/50 border border-base-300">
+                <summary className="collapse-title text-sm font-semibold">
+                  Summarization Settings
+                </summary>
+                <div className="collapse-content space-y-4">
+                  <div className="form-control">
+                    <label className="label cursor-pointer">
+                      <span className="label-text">Enable AI summarization</span>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-primary"
+                        checked={summaryConfig.enabled}
+                        onChange={(e) =>
+                          setSummaryConfig((prev) => ({
+                            ...prev,
+                            enabled: e.target.checked,
+                          }))
+                        }
+                      />
+                    </label>
+                  </div>
+
+                  <div className="form-control">
+                    <label className="label">
+                      <span className="label-text">API Base URL</span>
+                    </label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      value={summaryConfig.apiBaseUrl}
+                      onChange={(e) =>
+                        setSummaryConfig((prev) => ({
+                          ...prev,
+                          apiBaseUrl: e.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="form-control">
+                    <label className="label">
+                      <span className="label-text">Model</span>
+                    </label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      value={summaryConfig.model}
+                      onChange={(e) =>
+                        setSummaryConfig((prev) => ({
+                          ...prev,
+                          model: e.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="form-control">
+                    <label className="label">
+                      <span className="label-text">API Key Source</span>
+                      <span className="label-text-alt opacity-70">
+                        {summaryConfig.hasApiKey
+                          ? "Detected in environment"
+                          : "Missing in environment"}
+                      </span>
+                    </label>
+                    <div className="text-xs opacity-70 leading-relaxed">
+                      Summarization uses <code>LLM_SUMMARY_API_KEY</code> (or
+                      <code> LLM_API_KEY</code>) from your <code>.env</code>.
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end">
+                    <button
+                      className={`btn btn-sm ${
+                        isSavingSummaryConfig ? "btn-disabled" : "btn-primary"
+                      }`}
+                      onClick={saveSummarizationConfig}
+                      disabled={isSavingSummaryConfig}
+                    >
+                      {isSavingSummaryConfig ? "Saving..." : "Save"}
+                    </button>
                   </div>
                 </div>
               </details>

@@ -1,7 +1,7 @@
 use chrono;
 use cpal::traits::{DeviceTrait, HostTrait};
 use env_logger::Env;
-use log::{error, info};
+use log::{debug, error, info, warn};
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex as ParkingMutex;
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,7 @@ mod screen_recording;
 mod system_audio;
 mod transcription;
 mod whisper;
+mod summarization;
 
 pub use whisper::{
     delete_model_impl, get_whisper_params_impl, initialize_whisper_impl, install_model_impl,
@@ -30,6 +31,7 @@ use audio::state::{recording_state, try_recording_state, RecordingState};
 use mic::start_mic_stream;
 use transcription::TranscriptionSegment;
 use transcription::worker::stop_transcription_worker;
+pub use summarization::{SummarizationConfigUpdate, SummarizationConfigView};
 
 static RECORDING_SAVE_PATH: OnceCell<Arc<ParkingMutex<Option<String>>>> = OnceCell::new();
 pub(crate) static APP_HANDLE: OnceCell<AppHandle> = OnceCell::new();
@@ -55,9 +57,13 @@ pub(crate) fn emit_transcription_segment(
         return Ok(());
     }
 
-    info!(
-        "[emit_transcription_segment] Emitting segment #{}: {} | is_final: {}",
-        session_id, text, is_final
+    debug!(
+        "[emit_transcription_segment] source={} session#{} msg#{} final={} chars={}",
+        source,
+        session_id,
+        message_id,
+        is_final,
+        text.chars().count()
     );
 
     let segment = TranscriptionSegment {
@@ -178,6 +184,118 @@ pub struct AudioDevice {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TranscriptionBackendConfig {
     pub mode: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeAudioConfig {
+    transcription_mode: String,
+    vad_threshold: f32,
+    partial_interval_seconds: f32,
+}
+
+fn normalize_backend_mode(mode: &str) -> Option<String> {
+    match mode.trim().to_lowercase().as_str() {
+        "local" | "legacy_ws" => Some("local".to_string()),
+        "llm" | "api" | "openai" => Some("llm".to_string()),
+        _ => None,
+    }
+}
+
+fn runtime_audio_config_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let mut dir = app_handle
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("Failed to resolve app config dir: {e}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create app config dir: {e}"))?;
+    dir.push("audio-runtime-config.json");
+    Ok(dir)
+}
+
+fn runtime_audio_config_from_state(state: &RecordingState) -> RuntimeAudioConfig {
+    RuntimeAudioConfig {
+        transcription_mode: state.transcription_mode.clone(),
+        vad_threshold: state.vad_threshold,
+        partial_interval_seconds: state.partial_transcript_interval_samples as f32
+            / VAD_SAMPLE_RATE as f32,
+    }
+}
+
+fn persist_runtime_audio_config(
+    app_handle: &AppHandle,
+    config: &RuntimeAudioConfig,
+) -> Result<(), String> {
+    let path = runtime_audio_config_path(app_handle)?;
+    let data = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("Failed to serialize runtime audio config: {e}"))?;
+    std::fs::write(path, data)
+        .map_err(|e| format!("Failed to persist runtime audio config: {e}"))
+}
+
+fn persist_runtime_audio_config_from_state() -> Result<(), String> {
+    let app_handle = APP_HANDLE
+        .get()
+        .ok_or("App not initialized")?
+        .clone();
+    let state = recording_state();
+    let state_guard = state.lock();
+    let config = runtime_audio_config_from_state(&state_guard);
+    drop(state_guard);
+
+    persist_runtime_audio_config(&app_handle, &config)
+}
+
+fn apply_runtime_audio_config(config: &RuntimeAudioConfig) {
+    let mode = normalize_backend_mode(&config.transcription_mode)
+        .unwrap_or_else(|| "local".to_string());
+    let clamped_threshold = config.vad_threshold.clamp(0.01, 0.99);
+    let clamped_interval_seconds = config.partial_interval_seconds.clamp(0.5, 30.0);
+    let samples = ((clamped_interval_seconds * VAD_SAMPLE_RATE as f32).round() as usize).max(1);
+
+    let state = recording_state();
+    let mut state_guard = state.lock();
+    state_guard.transcription_mode = mode.clone();
+    state_guard.vad_threshold = clamped_threshold;
+    state_guard.partial_transcript_interval_samples = samples;
+
+    if let Some(vad_state) = state_guard.vad_state.as_mut() {
+        vad_state.threshold = clamped_threshold;
+    }
+}
+
+fn load_runtime_audio_config(app_handle: &AppHandle) {
+    let path = match runtime_audio_config_path(app_handle) {
+        Ok(path) => path,
+        Err(err) => {
+            warn!("Failed to resolve runtime audio config path: {}", err);
+            return;
+        }
+    };
+
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return;
+    };
+
+    match serde_json::from_str::<RuntimeAudioConfig>(&raw) {
+        Ok(config) => {
+            apply_runtime_audio_config(&config);
+            info!(
+                "Loaded runtime audio config: mode={}, threshold {:.4}, interval {:.2}s",
+                normalize_backend_mode(&config.transcription_mode)
+                    .unwrap_or_else(|| "local".to_string()),
+                config.vad_threshold,
+                config.partial_interval_seconds
+            );
+        }
+        Err(err) => {
+            warn!(
+                "Failed to parse runtime audio config at {}: {}",
+                path.display(),
+                err
+            );
+        }
+    }
 }
 
 pub(crate) async fn start_recording_impl(language: Option<String>) -> Result<(), String> {
@@ -380,17 +498,10 @@ pub(crate) async fn get_transcription_backend_config_impl(
 pub(crate) async fn set_transcription_backend_config_impl(
     config: TranscriptionBackendConfig,
 ) -> Result<(), String> {
-    let mode = config.mode.trim().to_lowercase();
-    let normalized_mode = match mode.as_str() {
-        "local" | "legacy_ws" => "local".to_string(),
-        "llm" | "api" | "openai" => "llm".to_string(),
-        _ => {
-            return Err(
-                "mode must be one of 'local' or 'llm' (aliases: 'legacy_ws', 'api', 'openai')"
-                    .to_string(),
-            )
-        }
-    };
+    let normalized_mode = normalize_backend_mode(&config.mode).ok_or_else(|| {
+        "mode must be one of 'local' or 'llm' (aliases: 'legacy_ws', 'api', 'openai')"
+            .to_string()
+    })?;
 
     let state = recording_state();
     let mut state_guard = state.lock();
@@ -400,6 +511,10 @@ pub(crate) async fn set_transcription_backend_config_impl(
 
     if previous_mode != normalized_mode {
         system_audio::finalize_active_system_audio_session("mode_switch");
+    }
+
+    if let Err(err) = persist_runtime_audio_config_from_state() {
+        warn!("Failed to persist transcription backend mode: {}", err);
     }
 
     info!("Updated transcription backend config: mode={}", normalized_mode);
@@ -427,6 +542,11 @@ pub(crate) async fn set_streaming_config_impl(config: StreamingConfig) -> Result
         "Updated streaming config: threshold {:.4}, partial interval {:.2}s ({} samples)",
         clamped_threshold, clamped_interval_seconds, samples
     );
+
+    drop(state_guard);
+    if let Err(err) = persist_runtime_audio_config_from_state() {
+        warn!("Failed to persist streaming config: {}", err);
+    }
 
     Ok(())
 }
@@ -591,6 +711,28 @@ pub(crate) async fn get_supported_languages_impl() -> Result<Vec<(String, String
     ])
 }
 
+pub(crate) async fn get_summarization_config_impl() -> Result<SummarizationConfigView, String> {
+    summarization::get_config_view()
+}
+
+pub(crate) async fn set_summarization_config_impl(
+    config: SummarizationConfigUpdate,
+) -> Result<SummarizationConfigView, String> {
+    let app_handle = APP_HANDLE.get().ok_or("App not initialized")?.clone();
+    summarization::set_config(&app_handle, config)
+}
+
+pub(crate) async fn summarize_transcript_impl(
+    transcript: String,
+    language: String,
+) -> Result<String, String> {
+    summarization::summarize_transcript(transcript, language).await
+}
+
+pub(crate) async fn summarization_provider_smoke_check_impl() -> Result<String, String> {
+    summarization::provider_smoke_check().await
+}
+
 pub(crate) async fn set_transcription_suppressed_impl(enabled: bool) -> Result<(), String> {
     let state = recording_state();
     let mut state_guard = state.lock();
@@ -673,7 +815,10 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            let _ = APP_HANDLE.set(app.handle().clone());
+            let app_handle = app.handle().clone();
+            let _ = APP_HANDLE.set(app_handle.clone());
+            summarization::init(&app_handle);
+            load_runtime_audio_config(&app_handle);
             Ok(())
         });
 

@@ -69,6 +69,13 @@ Pick `medium` or `large v3 turbo` when accuracy matters most; choose `base` for 
 - **No audio detected**: Check macOS “System Settings → Privacy & Security → Microphone” and allow access for the app.
 - **Slow performance**: Temporarily switch to a lighter model or close other CPU/GPU-intensive applications.
 
+## AI Summarization (OpenAI-compatible)
+
+- Configure via **Settings → Summarization Settings**.
+- The app tries AI summarization first, then falls back to local summarization when unconfigured or transient errors occur.
+- API key is never returned to the frontend; UI only receives `hasApiKey`.
+- Startup defaults can be set in `apps/desktop/.env.example` (`LLM_SUMMARY_*`).
+
 ## Credits
 
 - [whisper.cpp](https://github.com/ggerganov/whisper.cpp)

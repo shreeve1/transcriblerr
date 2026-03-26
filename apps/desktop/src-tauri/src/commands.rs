@@ -157,6 +157,28 @@ async fn get_supported_languages() -> Result<Vec<(String, String)>, String> {
 }
 
 #[tauri::command]
+async fn get_summarization_config() -> Result<SummarizationConfigView, String> {
+    crate::get_summarization_config_impl().await
+}
+
+#[tauri::command]
+async fn set_summarization_config(
+    config: SummarizationConfigUpdate,
+) -> Result<SummarizationConfigView, String> {
+    crate::set_summarization_config_impl(config).await
+}
+
+#[tauri::command]
+async fn summarize_transcript(transcript: String, language: String) -> Result<String, String> {
+    crate::summarize_transcript_impl(transcript, language).await
+}
+
+#[tauri::command]
+async fn summarization_provider_smoke_check() -> Result<String, String> {
+    crate::summarization_provider_smoke_check_impl().await
+}
+
+#[tauri::command]
 async fn set_transcription_suppressed(enabled: bool) -> Result<(), String> {
     crate::set_transcription_suppressed_impl(enabled).await
 }
@@ -194,6 +216,10 @@ pub fn register<R: Runtime>(builder: Builder<R>) -> Builder<R> {
         stop_screen_recording,
         get_screen_recording_status,
         get_supported_languages,
+        get_summarization_config,
+        set_summarization_config,
+        summarize_transcript,
+        summarization_provider_smoke_check,
         set_transcription_suppressed,
     ])
 }

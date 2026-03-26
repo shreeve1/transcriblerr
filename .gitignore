@@ -10,6 +10,10 @@ dist/
 *.log
 .DS_Store
 
+# Environment files
+.env
+**/.env
+
 # Tauri
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/gen/

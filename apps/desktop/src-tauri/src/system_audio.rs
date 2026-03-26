@@ -223,7 +223,7 @@ fn queue_system_audio_transcription(
         let language = language
             .map(|s| s.to_string())
             .or_else(|| state_guard.language.clone())
-            .or_else(|| Some("ja".to_string()));
+            .or_else(|| Some("en".to_string()));
         let session_id_counter = state_guard
             .transcription_state(TranscriptionSource::System)
             .session_id_counter;

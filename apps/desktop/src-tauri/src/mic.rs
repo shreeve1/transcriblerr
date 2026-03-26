@@ -1,7 +1,5 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use log::{error, info};
-use parking_lot::Mutex as ParkingMutex;
-use std::sync::Arc;
 use tauri::AppHandle;
 use voice_activity_detector::VoiceActivityDetector;
 
@@ -125,7 +123,6 @@ pub async fn start_mic_stream(app_handle: AppHandle, language: Option<String>) -
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => {
             let state_clone = state.clone();
-            let callback_count = Arc::new(ParkingMutex::new(0u64));
 
             let app_handle_clone = app_handle.clone();
             device.build_input_stream(
@@ -150,13 +147,6 @@ pub async fn start_mic_stream(app_handle: AppHandle, language: Option<String>) -
 
                         if state.session_samples >= state.session_max_samples {
                             finalize_active_session(&mut state, "session_max_duration");
-                        }
-                        let mut count = callback_count.lock();
-                        *count += 1;
-                        if *count % 100 == 0 {
-                            info!("Audio callback #{}: received {} samples, buffer size: {} samples ({:.2}s)",
-                                     *count, data.len(),
-                                     state.audio_buffer.len(), state.audio_buffer.len() as f32 / VAD_SAMPLE_RATE as f32);
                         }
                     }
                 },

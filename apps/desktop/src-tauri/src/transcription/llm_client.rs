@@ -7,7 +7,42 @@ use serde_json::Value;
 
 const DEFAULT_LLM_API_BASE_URL: &str = "http://localhost:8317/v1";
 const DEFAULT_LLM_TIMEOUT_SECS: u64 = 45;
-const MIN_LLM_CHUNK_SAMPLES: usize = 800; // 50ms at 16kHz
+const MIN_LLM_CHUNK_SAMPLES: usize = 3_200; // 200ms at 16kHz
+
+fn is_cjk_char(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x3400..=0x4DBF // CJK Unified Ideographs Extension A
+            | 0x4E00..=0x9FFF // CJK Unified Ideographs
+            | 0x3040..=0x309F // Hiragana
+            | 0x30A0..=0x30FF // Katakana
+            | 0xAC00..=0xD7AF // Hangul Syllables
+    )
+}
+
+fn should_drop_non_english_artifact(text: &str, language: Option<&str>) -> bool {
+    let lang = language
+        .map(|s| s.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+
+    if !(lang == "en" || lang == "en-us" || lang == "en-gb" || lang == "english") {
+        return false;
+    }
+
+    let chars: Vec<char> = text
+        .chars()
+        .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation())
+        .collect();
+    if chars.is_empty() {
+        return false;
+    }
+
+    // Only suppress short, mostly-CJK snippets when language is explicitly English.
+    // These commonly appear as hallucinated fragments on boundary/noise chunks.
+    let cjk_count = chars.iter().filter(|&&c| is_cjk_char(c)).count();
+    let ratio = cjk_count as f32 / chars.len() as f32;
+    chars.len() <= 12 && ratio >= 0.5
+}
 
 fn llm_api_base_url() -> String {
     std::env::var("LLM_API_BASE_URL")
@@ -189,5 +224,16 @@ pub fn transcribe_audio_chunk(
 
     let parsed = serde_json::from_str::<Value>(&body)
         .map_err(|e| format!("Invalid LLM transcription JSON response: {e}"))?;
-    Ok(parse_transcription_text(&parsed).unwrap_or_default())
+    let text = parse_transcription_text(&parsed).unwrap_or_default();
+
+    if should_drop_non_english_artifact(&text, language) {
+        warn!(
+            "Dropping likely non-English artifact for language=en ({} samples): {:?}",
+            audio_16k_f32.len(),
+            text
+        );
+        return Ok(String::new());
+    }
+
+    Ok(text)
 }
