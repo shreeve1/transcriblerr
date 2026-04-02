@@ -5,6 +5,8 @@ use serde_json::{json, Value};
 
 use super::{SummarizationConfig, SummarizationErrorKind};
 
+const DEFAULT_SYSTEM_PROMPT: &str = "You summarize spoken conversations. Return concise markdown with sections: Summary, Key Points, Action Items. Keep factual and avoid fabrication.";
+
 fn env_api_key() -> Option<String> {
     std::env::var("LLM_SUMMARY_API_KEY")
         .ok()
@@ -71,7 +73,10 @@ pub fn summarize(config: &SummarizationConfig, transcript: &str, language: &str)
 
     let url = format!("{}/chat/completions", config.api_base_url.trim_end_matches('/'));
 
-    let system_prompt = "You summarize spoken conversations. Return concise markdown with sections: Summary, Key Points, Action Items. Keep factual and avoid fabrication.";
+    let system_prompt = config
+        .custom_system_prompt
+        .as_deref()
+        .unwrap_or(DEFAULT_SYSTEM_PROMPT);
     let user_prompt = format!(
         "Language hint: {language}\n\nTranscript:\n{transcript}"
     );

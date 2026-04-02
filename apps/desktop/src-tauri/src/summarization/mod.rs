@@ -16,6 +16,8 @@ pub struct SummarizationConfig {
     pub api_base_url: String,
     pub model: String,
     pub timeout_secs: u64,
+    #[serde(default)]
+    pub custom_system_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,6 +27,8 @@ pub struct SummarizationConfigView {
     pub api_base_url: String,
     pub model: String,
     pub has_api_key: bool,
+    #[serde(default)]
+    pub custom_system_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +37,8 @@ pub struct SummarizationConfigUpdate {
     pub enabled: bool,
     pub api_base_url: String,
     pub model: String,
+    #[serde(default)]
+    pub custom_system_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -96,6 +102,7 @@ fn default_config() -> SummarizationConfig {
             .or_else(|| env_string("LLM_MODEL"))
             .unwrap_or_else(|| "gpt-4o-mini".to_string()),
         timeout_secs: env_u64("LLM_SUMMARY_TIMEOUT_SECS", 30),
+        custom_system_prompt: None,
     }
 }
 
@@ -150,6 +157,7 @@ pub fn get_config_view() -> Result<SummarizationConfigView, String> {
         api_base_url: guard.api_base_url.clone(),
         model: guard.model.clone(),
         has_api_key: env_api_key().is_some(),
+        custom_system_prompt: guard.custom_system_prompt.clone(),
     })
 }
 
@@ -160,6 +168,16 @@ pub fn set_config(app_handle: &AppHandle, update: SummarizationConfigUpdate) -> 
     guard.enabled = update.enabled;
     guard.api_base_url = update.api_base_url.trim().to_string();
     guard.model = update.model.trim().to_string();
+    guard.custom_system_prompt = update
+        .custom_system_prompt
+        .and_then(|value| {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
 
     if guard.api_base_url.is_empty() {
         return Err("apiBaseUrl cannot be empty".to_string());
@@ -175,6 +193,7 @@ pub fn set_config(app_handle: &AppHandle, update: SummarizationConfigUpdate) -> 
         api_base_url: guard.api_base_url.clone(),
         model: guard.model.clone(),
         has_api_key: env_api_key().is_some(),
+        custom_system_prompt: guard.custom_system_prompt.clone(),
     })
 }
 

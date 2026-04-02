@@ -36,6 +36,7 @@ interface SessionTranscription {
   sessionKey: string;
   sessionId: number;
   source: string;
+  speaker: string;
   messages: TranscriptionSegment[];
   audioChunks: Record<number, number[]>;
 }
@@ -101,12 +102,14 @@ interface SummarizationConfig {
   apiBaseUrl: string;
   model: string;
   hasApiKey: boolean;
+  customSystemPrompt?: string;
 }
 
 interface SummarizationConfigUpdate {
   enabled: boolean;
   apiBaseUrl: string;
   model: string;
+  customSystemPrompt?: string;
 }
 
 interface ModelInstallProgressEvent {
@@ -170,7 +173,7 @@ const normalizeMessageText = (value: string) =>
     .replace(/[\u0000-\u001F]+/g, " ")
     .trim();
 
-const summarizeLocally = (messages: TranscriptionSegment[]) => {
+const summarizeLocally = (messages: (TranscriptionSegment & { speaker: string })[]) => {
   const normalized = messages
     .map((message) => ({
       ...message,
@@ -240,14 +243,14 @@ const summarizeLocally = (messages: TranscriptionSegment[]) => {
   lines.push("");
   lines.push("Highlights:");
   for (const message of highlights) {
-    lines.push(`- ${sourceLabel(message.source)}: ${message.text}`);
+    lines.push(`- ${message.speaker}: ${message.text}`);
   }
 
   if (possibleNextSteps.length > 0) {
     lines.push("");
     lines.push("Possible next steps:");
     for (const message of possibleNextSteps) {
-      lines.push(`- ${sourceLabel(message.source)}: ${message.text}`);
+      lines.push(`- ${message.speaker}: ${message.text}`);
     }
   }
 
@@ -289,6 +292,108 @@ const isSilentSummaryFallback = (message: string): boolean => {
     code === "SUMMARY_PROVIDER"
   );
 };
+
+function SpeakerChip({
+  speaker,
+  participants,
+  onChangeSpeaker,
+  onAddParticipant,
+}: {
+  speaker: string;
+  participants: string[];
+  onChangeSpeaker: (name: string) => void;
+  onAddParticipant: (name: string) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [isAdding, setIsAdding] = useState(false);
+  const [newName, setNewName] = useState("");
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+        setIsAdding(false);
+        setNewName("");
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [isOpen]);
+
+  const handleSelect = (name: string) => {
+    onChangeSpeaker(name);
+    setIsOpen(false);
+    setIsAdding(false);
+    setNewName("");
+  };
+
+  const handleAddNew = () => {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    onAddParticipant(trimmed);
+    onChangeSpeaker(trimmed);
+    setIsOpen(false);
+    setIsAdding(false);
+    setNewName("");
+  };
+
+  return (
+    <div className="relative inline-block" ref={dropdownRef}>
+      <button
+        className="badge badge-sm badge-outline cursor-pointer hover:badge-primary transition-colors"
+        onClick={() => setIsOpen(!isOpen)}
+        title="Change speaker"
+      >
+        {speaker}
+      </button>
+      {isOpen && (
+        <div className="absolute top-full left-0 mt-1 z-50 bg-base-200 border border-base-300 rounded-lg shadow-lg min-w-[140px] py-1">
+          {participants.map((name) => (
+            <button
+              key={name}
+              className={`w-full text-left px-3 py-1 text-xs hover:bg-base-300 transition-colors ${name === speaker ? "font-semibold text-primary" : ""}`}
+              onClick={() => handleSelect(name)}
+            >
+              {name}
+            </button>
+          ))}
+          <div className="border-t border-base-300 mt-1 pt-1">
+            {isAdding ? (
+              <form
+                className="px-2 flex gap-1"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleAddNew();
+                }}
+              >
+                <input
+                  type="text"
+                  className="input input-xs input-bordered flex-1 min-w-0"
+                  placeholder="Name..."
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  autoFocus
+                />
+                <button type="submit" className="btn btn-xs btn-primary">
+                  +
+                </button>
+              </form>
+            ) : (
+              <button
+                className="w-full text-left px-3 py-1 text-xs text-primary hover:bg-base-300 transition-colors"
+                onClick={() => setIsAdding(true)}
+              >
+                + Add new…
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function App() {
   const [isMuted, setIsMuted] = useState(true);
@@ -354,6 +459,7 @@ function App() {
     apiBaseUrl: "http://localhost:8317/v1",
     model: "gpt-4o-mini",
     hasApiKey: false,
+    customSystemPrompt: "",
   });
   const [isSavingSummaryConfig, setIsSavingSummaryConfig] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem("theme") || "light");
@@ -366,6 +472,12 @@ function App() {
   });
   const [newMessageCount, setNewMessageCount] = useState(0);
   const [isAutoScrollPaused, setIsAutoScrollPaused] = useState(false);
+  const [participants, setParticipants] = useState<string[]>(["Me", "Remote"]);
+
+  const sourceDefaultSpeakerRef = useRef<Record<string, string>>({
+    user: "Me",
+    system: "Remote",
+  });
   const transcriptionSuppressedForPlaybackRef = useRef(false);
   const copyFeedbackTimeoutRef = useRef<number | null>(null);
   const copyAllFeedbackTimeoutRef = useRef<number | null>(null);
@@ -434,6 +546,7 @@ function App() {
             sessionKey,
             sessionId: segment.sessionId,
             source: segment.source,
+            speaker: sourceDefaultSpeakerRef.current[segment.source] ?? sourceLabel(segment.source),
             messages: [segment],
             audioChunks: segment.audioData?.length
               ? { [segment.messageId]: segment.audioData }
@@ -486,6 +599,24 @@ function App() {
         return changed ? { ...session, messages } : session;
       }),
     );
+  }, []);
+
+  const handleAddParticipant = useCallback((name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setParticipants(prev => prev.includes(trimmed) ? prev : [...prev, trimmed]);
+  }, []);
+
+  const handleChangeSpeaker = useCallback((sessionKey: string, name: string) => {
+    setTranscriptions(prev => {
+      const target = prev.find(s => s.sessionKey === sessionKey);
+      if (target) {
+        sourceDefaultSpeakerRef.current = { ...sourceDefaultSpeakerRef.current, [target.source]: name };
+      }
+      return prev.map(s =>
+        s.sessionKey === sessionKey ? { ...s, speaker: name } : s
+      );
+    });
   }, []);
 
   useEffect(() => {
@@ -653,6 +784,7 @@ function App() {
         enabled: summaryConfig.enabled,
         apiBaseUrl: summaryConfig.apiBaseUrl,
         model: summaryConfig.model,
+        customSystemPrompt: summaryConfig.customSystemPrompt || undefined,
       };
 
       await invoke<SummarizationConfig>("set_summarization_config", {
@@ -1180,7 +1312,9 @@ function App() {
     }
 
     const allMessages = transcriptions
-      .flatMap((session) => session.messages)
+      .flatMap((session) =>
+        session.messages.map((message) => ({ ...message, speaker: session.speaker }))
+      )
       .filter((message) => message.isFinal && message.text.trim().length > 0)
       .sort((a, b) => {
         if (a.timestamp !== b.timestamp) {
@@ -1202,7 +1336,7 @@ function App() {
       const transcript = allMessages
         .map(
           (message) =>
-            `[${sourceLabel(message.source)}] ${normalizeMessageText(message.text)}`,
+            `[${message.speaker}] ${normalizeMessageText(message.text)}`,
         )
         .join("\n");
 
@@ -1479,7 +1613,7 @@ function App() {
       .flatMap((session) =>
         session.messages.map((message) => ({
           timestamp: message.timestamp,
-          sender: message.source,
+          sender: session.speaker,
           text: message.text,
           sessionId: message.sessionId,
           messageId: message.messageId,
@@ -1789,7 +1923,7 @@ function App() {
                 </div>
               </div>
               {isSummaryExpanded && (
-                <div className="px-3 pb-3 text-sm whitespace-pre-wrap leading-relaxed border-t border-base-300/70">
+                <div className="px-3 pb-3 text-sm whitespace-pre-wrap leading-relaxed border-t border-base-300/70 max-h-[60vh] overflow-y-auto">
                   {summaryPanelText}
                 </div>
               )}
@@ -1938,6 +2072,14 @@ function App() {
                       key={session.sessionKey}
                       className={`chat ${alignment}`}
                     >
+                      <div className="chat-header text-xs opacity-70">
+                        <SpeakerChip
+                          speaker={session.speaker}
+                          participants={participants}
+                          onChangeSpeaker={(name) => handleChangeSpeaker(session.sessionKey, name)}
+                          onAddParticipant={handleAddParticipant}
+                        />
+                      </div>
                       <div
                         className={`chat-bubble text-sm ${bubbleColor} ${
                           hasInProgressMessage ? "opacity-70" : ""
@@ -2330,6 +2472,27 @@ function App() {
                       Summarization uses <code>LLM_SUMMARY_API_KEY</code> (or
                       <code> LLM_API_KEY</code>) from your <code>.env</code>.
                     </div>
+                  </div>
+
+                  <div className="form-control">
+                    <label className="label">
+                      <span className="label-text">Custom System Prompt (optional)</span>
+                    </label>
+                    <textarea
+                      className="textarea textarea-bordered w-full text-sm"
+                      rows={4}
+                      placeholder="You summarize spoken conversations. Return concise markdown with sections: Summary, Key Points, Action Items. Keep factual and avoid fabrication."
+                      value={summaryConfig.customSystemPrompt || ""}
+                      onChange={(e) =>
+                        setSummaryConfig((prev) => ({
+                          ...prev,
+                          customSystemPrompt: e.target.value || undefined,
+                        }))
+                      }
+                    />
+                    <label className="label">
+                      <span className="label-text-alt opacity-70">Leave empty to use the default prompt.</span>
+                    </label>
                   </div>
 
                   <div className="flex justify-end">
