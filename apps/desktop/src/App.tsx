@@ -1560,7 +1560,20 @@ function App() {
     }
   };
 
-  const clearAllMessages = () => {
+  const clearAllMessages = async () => {
+    try {
+      await invoke("stop_system_audio");
+    } catch (err) {
+      console.debug("stop_system_audio during clear ignored:", err);
+    }
+
+    try {
+      await invoke("stop_recording");
+    } catch (err) {
+      console.debug("stop_recording during clear ignored:", err);
+    }
+
+    setIsRecordingActive(false);
     stopAudio();
     setTranscriptions([]);
   };
