@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -304,16 +305,24 @@ function SpeakerChip({
   onChangeSpeaker: (name: string) => void;
   onAddParticipant: (name: string) => void;
 }) {
-  const [isOpen, setIsOpen] = useState(false);
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number } | null>(null);
   const [isAdding, setIsAdding] = useState(false);
   const [newName, setNewName] = useState("");
+  const chipRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const isOpen = dropdownPos !== null;
 
   useEffect(() => {
     if (!isOpen) return;
     const handleClickOutside = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setIsOpen(false);
+      const target = e.target as Node;
+      if (
+        chipRef.current &&
+        !chipRef.current.contains(target) &&
+        dropdownRef.current &&
+        !dropdownRef.current.contains(target)
+      ) {
+        setDropdownPos(null);
         setIsAdding(false);
         setNewName("");
       }
@@ -322,9 +331,34 @@ function SpeakerChip({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isOpen]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const scrollContainer = document.querySelector("[data-chat-scroll]");
+    const handleScroll = () => {
+      setDropdownPos(null);
+      setIsAdding(false);
+      setNewName("");
+    };
+    scrollContainer?.addEventListener("scroll", handleScroll);
+    return () => scrollContainer?.removeEventListener("scroll", handleScroll);
+  }, [isOpen]);
+
+  const handleToggle = () => {
+    if (isOpen) {
+      setDropdownPos(null);
+      setIsAdding(false);
+      setNewName("");
+      return;
+    }
+    const rect = chipRef.current?.getBoundingClientRect();
+    if (rect) {
+      setDropdownPos({ top: rect.bottom + 4, left: rect.left });
+    }
+  };
+
   const handleSelect = (name: string) => {
     onChangeSpeaker(name);
-    setIsOpen(false);
+    setDropdownPos(null);
     setIsAdding(false);
     setNewName("");
   };
@@ -334,22 +368,26 @@ function SpeakerChip({
     if (!trimmed) return;
     onAddParticipant(trimmed);
     onChangeSpeaker(trimmed);
-    setIsOpen(false);
+    setDropdownPos(null);
     setIsAdding(false);
     setNewName("");
   };
 
   return (
-    <div className="relative inline-block" ref={dropdownRef}>
+    <div className="inline-block" ref={chipRef}>
       <button
         className="badge badge-sm badge-outline cursor-pointer hover:badge-primary transition-colors"
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={handleToggle}
         title="Change speaker"
       >
         {speaker}
       </button>
-      {isOpen && (
-        <div className="absolute top-full left-0 mt-1 z-50 bg-base-200 border border-base-300 rounded-lg shadow-lg min-w-[140px] py-1">
+      {dropdownPos && createPortal(
+        <div
+          ref={dropdownRef}
+          className="fixed z-[9999] bg-base-100 border border-base-300 rounded-lg shadow-xl min-w-[140px] py-1"
+          style={{ top: dropdownPos.top, left: dropdownPos.left }}
+        >
           {participants.map((name) => (
             <button
               key={name}
@@ -389,7 +427,8 @@ function SpeakerChip({
               </button>
             )}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
@@ -1934,6 +1973,7 @@ function App() {
         <div
           ref={scrollContainerRef}
           onScroll={handleScrollContainer}
+          data-chat-scroll
           className="h-full overflow-y-auto"
         >
           <div
