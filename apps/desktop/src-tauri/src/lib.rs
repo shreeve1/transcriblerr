@@ -648,44 +648,11 @@ pub(crate) async fn get_screen_recording_config_impl() -> Result<bool, String> {
 }
 
 pub(crate) async fn start_screen_recording_impl() -> Result<(), String> {
-    let state = recording_state();
-
-    let mut state_guard = state.lock();
-
-    if state_guard.recording_save_enabled {
-        let save_path = RECORDING_SAVE_PATH.get_or_init(|| Arc::new(ParkingMutex::new(None)));
-        let path_guard = save_path.lock();
-        if let Some(base_path) = path_guard.as_ref() {
-            setup_recording_directory(&mut state_guard, base_path)?;
-        }
-    }
-
-    let recording_dir = state_guard.current_recording_dir.clone();
-    state_guard.screen_recording_active = true;
-    drop(state_guard);
-
-    if let Some(dir) = recording_dir {
-        let now = chrono::Local::now();
-        let timestamp = now.format("%Y%m%d_%H%M%S");
-        let filename = format!("screen_recording_{}.mp4", timestamp);
-        let full_path = std::path::Path::new(&dir).join(filename);
-
-        info!("Starting screen recording to: {}", full_path.display());
-
-        screen_recording::start_screen_recording(full_path.to_str().unwrap())
-    } else {
-        Err("Recording directory not set".to_string())
-    }
+    Ok(())
 }
 
 pub(crate) async fn stop_screen_recording_impl() -> Result<(), String> {
-    let state = recording_state();
-
-    let mut state_guard = state.lock();
-    state_guard.screen_recording_active = false;
-    drop(state_guard);
-
-    screen_recording::stop_screen_recording()
+    Ok(())
 }
 
 pub(crate) async fn get_screen_recording_status_impl() -> Result<bool, String> {

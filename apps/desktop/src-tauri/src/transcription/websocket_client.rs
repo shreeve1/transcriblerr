@@ -13,7 +13,6 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
 use super::TranscriptionSource;
-use crate::audio::processing::save_audio_session_to_wav;
 use crate::audio::state::try_recording_state;
 use crate::emit_transcription_segment;
 
@@ -607,19 +606,15 @@ fn persist_api_audio_if_needed(
         .wrapping_add(message_id);
     let audio = audio_16k_f32.to_vec();
 
-    std::thread::spawn(move || {
-        if let Err(err) =
-            save_audio_session_to_wav(&audio, synthetic_session_id, &recording_dir, source_tag)
-        {
-            log::error!(
-                "Failed to save API {} audio for session={}, message={}: {}",
-                source_tag,
-                mapped_session_id,
-                message_id,
-                err
-            );
-        }
-    });
+    // Transcript-only mode: disable WAV persistence for API audio chunks.
+    let _ = (
+        audio,
+        synthetic_session_id,
+        recording_dir,
+        source_tag,
+        mapped_session_id,
+        message_id,
+    );
 }
 
 fn emit_forced_final_if_possible(
@@ -714,16 +709,12 @@ fn persist_remaining_audio_if_needed(source: TranscriptionSource, audio: Vec<f32
         reason_owned
     );
 
-    std::thread::spawn(move || {
-        if let Err(err) =
-            save_audio_session_to_wav(&audio, synthetic_session_id, &recording_dir, source_tag)
-        {
-            log::error!(
-                "Failed to save remaining buffered {} audio (reason={}): {}",
-                source_tag,
-                reason_owned,
-                err
-            );
-        }
-    });
+    // Transcript-only mode: disable WAV persistence for remaining buffered audio.
+    let _ = (
+        audio,
+        synthetic_session_id,
+        recording_dir,
+        source_tag,
+        reason_owned,
+    );
 }

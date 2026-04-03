@@ -42,13 +42,8 @@ pub fn finalize_session_common(
                 source, session_id_counter, audio_len, duration, dir
             );
 
-            std::thread::spawn(move || {
-                if let Err(e) =
-                    save_audio_session_to_wav(&audio_clone, session_id_counter, &dir, &source)
-                {
-                    error!("Failed to save {} audio session: {}", source, e);
-                }
-            });
+            // Transcript-only mode: disable WAV persistence while keeping session finalization flow.
+            let _ = (audio_clone, audio_len, duration, dir, source, session_id_counter);
         } else {
             info!("Recording save enabled but no recording directory set");
         }

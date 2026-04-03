@@ -483,7 +483,7 @@ function App() {
   const [isSavingWhisperParams, setIsSavingWhisperParams] = useState(false);
   const [recordingSaveEnabled, setRecordingSaveEnabled] = useState(false);
   const [recordingSavePath, setRecordingSavePath] = useState("");
-  const [screenRecordingEnabled, setScreenRecordingEnabled] = useState(false);
+
   const [isRecordingActive, setIsRecordingActive] = useState(false);
   const [isRecordingBusy, setIsRecordingBusy] = useState(false);
   const [isMicBusy, setIsMicBusy] = useState(false);
@@ -878,14 +878,10 @@ function App() {
 
     if (!isRecordingActive) {
       if (!recordingSaveEnabled || !recordingSavePath) {
-        setError("Enable recording save and set a destination folder.");
+        setError("Enable save transcript and set a destination folder.");
         return;
       }
-      if (
-        transcriptionMode === "local" &&
-        !screenRecordingEnabled &&
-        !isInitialized
-      ) {
+      if (transcriptionMode === "local" && !isInitialized) {
         setError("Initialize a model before starting recording.");
         return;
       }
@@ -903,14 +899,9 @@ function App() {
       }
 
       setIsRecordingBusy(true);
-      let startedScreenRecording = false;
       let startedRecording = false;
       let startedSystemAudio = false;
       try {
-        if (screenRecordingEnabled) {
-          await invoke("start_screen_recording");
-          startedScreenRecording = true;
-        }
         await invoke("start_recording", {
           language: selectedLanguage === "auto" ? null : selectedLanguage,
         });
@@ -935,13 +926,6 @@ function App() {
             console.error("Failed to rollback recording session:", stopErr);
           }
         }
-        if (startedScreenRecording) {
-          try {
-            await invoke("stop_screen_recording");
-          } catch (stopErr) {
-            console.error("Failed to rollback screen recording:", stopErr);
-          }
-        }
         setIsRecordingActive(false);
         setError(
           `Recording start error: ${err instanceof Error ? err.message : String(err)}`,
@@ -954,9 +938,6 @@ function App() {
 
     setIsRecordingBusy(true);
     try {
-      if (screenRecordingEnabled) {
-        await invoke("stop_screen_recording");
-      }
       await invoke("stop_recording");
       await invoke("stop_system_audio");
       setIsRecordingActive(false);
@@ -996,7 +977,7 @@ function App() {
     } catch (err) {
       console.error("Failed to save recording save config:", err);
       setError(
-        `Recording save settings error: ${
+        `Save transcript settings error: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
@@ -1061,44 +1042,13 @@ function App() {
         saveRecordingSaveConfig(enabled, path);
       }
 
-      const savedScreenRecordingEnabled = localStorage.getItem(
-        "screenRecordingEnabled",
-      );
-      if (savedScreenRecordingEnabled !== null) {
-        const enabled = savedScreenRecordingEnabled === "true";
-        setScreenRecordingEnabled(enabled);
-        saveScreenRecordingConfig(enabled);
-      }
+
     } catch (err) {
       console.error("Failed to load settings from localStorage:", err);
     }
   };
 
-  const loadScreenRecordingConfig = async () => {
-    try {
-      const enabled = await invoke<boolean>("get_screen_recording_config");
-      setScreenRecordingEnabled(enabled);
-    } catch (err) {
-      console.error("Failed to load screen recording config:", err);
-    }
-  };
 
-  const saveScreenRecordingConfig = async (enabled: boolean) => {
-    try {
-      await invoke("set_screen_recording_config", {
-        enabled,
-      });
-      setScreenRecordingEnabled(enabled);
-      localStorage.setItem("screenRecordingEnabled", enabled.toString());
-    } catch (err) {
-      console.error("Failed to save screen recording config:", err);
-      setError(
-        `Screen recording settings error: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-  };
 
   useEffect(() => {
     const unlistenTranscription = listen<TranscriptionSegment>(
@@ -1159,7 +1109,7 @@ function App() {
     loadStreamingConfig();
     loadWhisperParams();
     loadRecordingSaveConfig();
-    loadScreenRecordingConfig();
+
     loadTranscriptionBackendConfig();
     loadSummarizationConfig();
 
@@ -2551,12 +2501,12 @@ function App() {
 
               <details className="collapse collapse-arrow bg-base-200/50 border border-base-300">
                 <summary className="collapse-title text-sm font-semibold">
-                  Recording & Save Settings
+                  Save Transcript Settings
                 </summary>
                 <div className="collapse-content space-y-4">
                   <div className="form-control">
                     <label className="label cursor-pointer">
-                      <span className="label-text">Save recording/audio</span>
+                      <span className="label-text">Save transcript</span>
                       <input
                         type="checkbox"
                         className="toggle toggle-primary"
@@ -2590,30 +2540,11 @@ function App() {
                       />
                       <label className="label">
                         <span className="label-text-alt opacity-70">
-                          Saved as MP4 during screen recording, or WAV for audio-only capture.
+                          Saves session transcript text into the selected folder.
                         </span>
                       </label>
                     </div>
                   )}
-
-                  <div className="form-control">
-                    <label className="label cursor-pointer">
-                      <span className="label-text">Enable screen recording</span>
-                      <input
-                        type="checkbox"
-                        className="toggle toggle-primary"
-                        checked={screenRecordingEnabled}
-                        onChange={(e) =>
-                          saveScreenRecordingConfig(e.target.checked)
-                        }
-                      />
-                    </label>
-                    <label className="label">
-                      <span className="label-text-alt opacity-70">
-                        When enabled, the recording button captures screen + audio; when disabled, only audio is saved.
-                      </span>
-                    </label>
-                  </div>
                 </div>
               </details>
 
