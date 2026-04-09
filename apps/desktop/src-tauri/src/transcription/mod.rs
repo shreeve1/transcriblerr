@@ -30,6 +30,7 @@ pub enum TranscriptionCommand {
         source: TranscriptionSource,
         session_id_counter: u64,
         is_final: bool,
+        speaker_id: Option<String>,
     },
     Stop,
 }
@@ -47,4 +48,6 @@ pub struct TranscriptionSegment {
     #[serde(rename = "isFinal")]
     pub is_final: bool,
     pub source: String,
+    #[serde(rename = "speakerId", default)]
+    pub speaker_id: Option<String>,
 }

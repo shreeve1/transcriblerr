@@ -235,6 +235,7 @@ fn queue_system_audio_transcription(
             TranscriptionSource::System,
             is_final,
             tx,
+            None,
         );
 
         if let Some(app) = app_handle {

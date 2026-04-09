@@ -100,6 +100,7 @@ pub fn stream_audio_chunk_and_emit(
             message_id,
             event_is_final,
             source.event_source().to_string(),
+            None,
         )?;
 
         if event_is_final {
@@ -662,6 +663,7 @@ fn emit_forced_final_if_possible(
         message_id,
         true,
         source.event_source().to_string(),
+        None,
     ) {
         log::warn!(
             "WebSocket({}): failed to emit forced final segment on {}: {}",
