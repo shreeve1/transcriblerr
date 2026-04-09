@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 mod audio;
 mod commands;
+#[cfg(feature = "diarization")]
 mod diarization;
 mod mic;
 mod screen_recording;
@@ -37,8 +38,117 @@ pub use summarization::{SummarizationConfigUpdate, SummarizationConfigView};
 static RECORDING_SAVE_PATH: OnceCell<Arc<ParkingMutex<Option<String>>>> = OnceCell::new();
 pub(crate) static APP_HANDLE: OnceCell<AppHandle> = OnceCell::new();
 static SHUTDOWN_CLEANED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "diarization")]
 static DIARIZATION_MANAGER: OnceCell<Arc<ParkingMutex<diarization::DiarizationManager>>> = OnceCell::new();
 
+
+#[cfg(feature = "diarization")]
+pub(crate) fn speaker_profiles_path() -> Result<std::path::PathBuf, String> {
+    let app_handle = APP_HANDLE.get().ok_or("App not initialized")?;
+    let mut dir = app_handle
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("Failed to resolve app config dir: {e}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create app config dir: {e}"))?;
+    dir.push("speaker-profiles.json");
+    Ok(dir)
+}
+
+#[cfg(feature = "diarization")]
+fn speaker_embedding_model_dir() -> Result<std::path::PathBuf, String> {
+    let home = std::env::var("HOME")
+        .map_err(|_| "Failed to resolve HOME".to_string())?;
+    let dir = std::path::PathBuf::from(home)
+        .join("Library/Application Support/local-whisper/models/speaker-embedding");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create speaker embedding model dir: {}", e))?;
+    Ok(dir)
+}
+
+#[cfg(feature = "diarization")]
+fn download_speaker_model_blocking(
+    model_dir: &std::path::Path,
+    filename: &str,
+) -> Result<(), String> {
+    let url = format!(
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/{}",
+        filename
+    );
+    let target_path = model_dir.join(filename);
+    let tmp_path = target_path.with_extension("download");
+
+    let response = reqwest::blocking::get(&url)
+        .map_err(|e| format!("Download failed: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Download failed with status {}", response.status()));
+    }
+
+    let bytes = response.bytes()
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    std::fs::write(&tmp_path, &bytes)
+        .map_err(|e| format!("Failed to write model file: {}", e))?;
+
+    std::fs::rename(&tmp_path, &target_path)
+        .map_err(|e| format!("Failed to move model file: {}", e))?;
+
+    Ok(())
+}
+
+#[cfg(feature = "diarization")]
+fn ensure_diarization_initialized() {
+    use crate::diarization::{DiarizationConfig, DiarizationManager};
+
+    if DIARIZATION_MANAGER.get().is_some() {
+        return;
+    }
+
+    let model_dir = match speaker_embedding_model_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            warn!("Cannot resolve speaker embedding model dir: {}", e);
+            let _ = DIARIZATION_MANAGER.set(Arc::new(ParkingMutex::new(DiarizationManager::new_disabled())));
+            return;
+        }
+    };
+
+    let model_filename = "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx";
+    let model_path = model_dir.join(model_filename);
+
+    if !model_path.exists() {
+        info!("Speaker embedding model not found, attempting download...");
+        match download_speaker_model_blocking(&model_dir, model_filename) {
+            Ok(_) => info!("Speaker embedding model downloaded"),
+            Err(e) => {
+                warn!("Failed to download speaker embedding model: {}", e);
+                let _ = DIARIZATION_MANAGER.set(Arc::new(ParkingMutex::new(DiarizationManager::new_disabled())));
+                return;
+            }
+        }
+    }
+
+    let config = DiarizationConfig::default();
+    match DiarizationManager::new(&model_path, config) {
+        Ok(mut manager) => {
+            if let Ok(profiles_path) = speaker_profiles_path() {
+                if let Err(e) = manager.tracker_mut().load_from_file(&profiles_path) {
+                    warn!("Failed to load speaker profiles: {}", e);
+                }
+            }
+            let _ = DIARIZATION_MANAGER.set(Arc::new(ParkingMutex::new(manager)));
+            info!("Diarization manager initialized");
+        }
+        Err(e) => {
+            warn!("Failed to initialize diarization: {}", e);
+            let _ = DIARIZATION_MANAGER.set(Arc::new(ParkingMutex::new(DiarizationManager::new_disabled())));
+        }
+    }
+}
+
+#[cfg(not(feature = "diarization"))]
+fn ensure_diarization_initialized() {}
 
 fn load_backend_env() {
     // Rust side does not auto-load .env; load common locations explicitly.

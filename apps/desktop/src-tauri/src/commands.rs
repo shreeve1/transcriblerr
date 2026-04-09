@@ -1,4 +1,6 @@
 use crate::*;
+#[cfg(feature = "diarization")]
+use tauri::Emitter;
 use tauri::{Builder, Runtime};
 
 #[tauri::command]
@@ -183,6 +185,75 @@ async fn set_transcription_suppressed(enabled: bool) -> Result<(), String> {
     crate::set_transcription_suppressed_impl(enabled).await
 }
 
+#[cfg(feature = "diarization")]
+#[tauri::command]
+fn rename_speaker(speaker_id: String, display_name: String) -> Result<(), String> {
+    let manager = crate::DIARIZATION_MANAGER
+        .get()
+        .ok_or("Diarization not initialized")?;
+    let mut guard = manager.lock();
+    guard.rename_speaker(&speaker_id, &display_name)?;
+
+    if let Ok(path) = crate::speaker_profiles_path() {
+        if let Err(e) = guard.tracker().save_to_file(&path) {
+            log::warn!("Failed to persist speaker profiles after rename: {}", e);
+        }
+    }
+
+    drop(guard);
+
+    if let Some(app) = crate::APP_HANDLE.get() {
+        let _ = app.emit("speaker-updated", serde_json::json!({
+            "speakerId": speaker_id,
+            "displayName": display_name,
+        }));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "diarization")]
+#[tauri::command]
+fn get_speakers() -> Result<Vec<crate::diarization::SpeakerInfo>, String> {
+    let manager = crate::DIARIZATION_MANAGER
+        .get()
+        .ok_or("Diarization not initialized")?;
+    Ok(manager.lock().list_speakers())
+}
+
+#[cfg(feature = "diarization")]
+#[tauri::command]
+fn reset_speakers() -> Result<(), String> {
+    let manager = crate::DIARIZATION_MANAGER
+        .get()
+        .ok_or("Diarization not initialized")?;
+    manager.lock().reset();
+
+    if let Ok(path) = crate::speaker_profiles_path() {
+        let _ = std::fs::remove_file(&path);
+    }
+
+    Ok(())
+}
+
+#[cfg(not(feature = "diarization"))]
+#[tauri::command]
+fn rename_speaker(_speaker_id: String, _display_name: String) -> Result<(), String> {
+    Err("Diarization feature not enabled".to_string())
+}
+
+#[cfg(not(feature = "diarization"))]
+#[tauri::command]
+fn get_speakers() -> Result<Vec<serde_json::Value>, String> {
+    Err("Diarization feature not enabled".to_string())
+}
+
+#[cfg(not(feature = "diarization"))]
+#[tauri::command]
+fn reset_speakers() -> Result<(), String> {
+    Err("Diarization feature not enabled".to_string())
+}
+
 pub fn register<R: Runtime>(builder: Builder<R>) -> Builder<R> {
     builder.invoke_handler(tauri::generate_handler![
         scan_models,
@@ -216,5 +287,8 @@ pub fn register<R: Runtime>(builder: Builder<R>) -> Builder<R> {
         summarize_transcript,
         summarization_provider_smoke_check,
         set_transcription_suppressed,
+        rename_speaker,
+        get_speakers,
+        reset_speakers,
     ])
 }

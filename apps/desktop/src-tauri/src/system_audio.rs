@@ -31,6 +31,7 @@ struct SystemAudioSession {
     partial_transcript_interval_samples: usize,
     last_vad_event_time: std::time::Instant,
     is_voice_active: bool,
+    current_session_speaker_id: Option<String>,
 }
 
 static mut SYSTEM_AUDIO_SESSION: Option<SystemAudioSession> = None;
@@ -46,6 +47,7 @@ fn reset_system_audio_session_tracking(session: &mut SystemAudioSession) {
     session.last_voice_sample = None;
     session.last_partial_emit_samples = 0;
     session.is_voice_active = false;
+    session.current_session_speaker_id = None;
 }
 
 fn last_system_audio_error_message() -> Option<String> {
@@ -164,6 +166,18 @@ fn process_system_audio_sample_local(
         }
     }
 
+    // Run diarization once we have enough voiced audio
+    #[cfg(feature = "diarization")]
+    if session.current_session_speaker_id.is_none() && session.session_audio.len() >= 24000 {
+        if let Some(manager) = crate::DIARIZATION_MANAGER.get() {
+            let mut guard = manager.lock();
+            let result = guard.process_utterance(&session.session_audio, 16000);
+            if let Some(sid) = result.speaker_id {
+                session.current_session_speaker_id = Some(sid);
+            }
+        }
+    }
+
     // Emit periodic VAD voice activity events every 500ms
     if let Some(app) = app_handle {
         let now = std::time::Instant::now();
@@ -235,7 +249,7 @@ fn queue_system_audio_transcription(
             TranscriptionSource::System,
             is_final,
             tx,
-            None,
+            session.current_session_speaker_id.clone(),
         );
 
         if let Some(app) = app_handle {
@@ -351,10 +365,13 @@ pub fn start_system_audio_capture(
             partial_transcript_interval_samples: partial_interval,
             last_vad_event_time: std::time::Instant::now(),
             is_voice_active: false,
+            current_session_speaker_id: None,
         });
 
         APP_HANDLE = Some(app_handle);
         RECORDING_STATE = Some(state.clone());
+
+        crate::ensure_diarization_initialized();
 
         let result = system_audio_start(audio_callback);
 
