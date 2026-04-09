@@ -19,6 +19,9 @@ pub fn spawn_transcription_worker(
     let handle = thread::spawn(move || {
         use std::collections::{HashMap, HashSet};
 
+        #[cfg(feature = "diarization")]
+        let mut last_profile_save = std::time::Instant::now();
+
         while let Ok(command) = rx.recv() {
             match command {
                 TranscriptionCommand::Run {
@@ -107,6 +110,25 @@ pub fn spawn_transcription_worker(
                                     err
                                 ),
                             );
+                        }
+                    }
+
+                    #[cfg(feature = "diarization")]
+                    {
+                        if last_profile_save.elapsed().as_secs() >= 5 {
+                            if let Some(manager) = crate::DIARIZATION_MANAGER.get() {
+                                let mut guard = manager.lock();
+                                if guard.tracker().is_dirty() {
+                                    if let Ok(path) = crate::speaker_profiles_path() {
+                                        if let Err(e) = guard.tracker().save_to_file(&path) {
+                                            log::warn!("Failed to persist speaker profiles: {}", e);
+                                        } else {
+                                            guard.tracker_mut().clear_dirty();
+                                        }
+                                    }
+                                }
+                            }
+                            last_profile_save = std::time::Instant::now();
                         }
                     }
                 }
