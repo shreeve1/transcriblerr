@@ -101,15 +101,15 @@ class ScreenRecorder: NSObject, SCStreamDelegate, SCStreamOutput {
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
 
-        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "com.local-whisper.screen"))
-        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "com.local-whisper.recording-audio"))
+        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "com.transcriblerr.screen"))
+        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "com.transcriblerr.recording-audio"))
 
         // Avoid referencing enum case directly for pre-macOS 15 SDK compatibility
         if #available(macOS 15.0, *), let microphoneType = SCStreamOutputType(rawValue: 2) {
             try stream.addStreamOutput(
                 self,
                 type: microphoneType,
-                sampleHandlerQueue: DispatchQueue(label: "com.local-whisper.recording-microphone")
+                sampleHandlerQueue: DispatchQueue(label: "com.transcriblerr.recording-microphone")
             )
         }
 

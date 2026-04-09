@@ -346,14 +346,14 @@ fn handle_text_message(
 }
 
 fn websocket_url() -> String {
-    if let Ok(url) = std::env::var("LOCAL_WHISPER_WS_URL") {
+    if let Ok(url) = std::env::var("TRANSCRIBLERR_WS_URL") {
         let trimmed = url.trim();
         if !trimmed.is_empty() {
             return trimmed.to_string();
         }
     }
 
-    let base = std::env::var("LOCAL_WHISPER_API_BASE_URL")
+    let base = std::env::var("TRANSCRIBLERR_API_BASE_URL")
         .ok()
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| "http://127.0.0.1:8000".to_string());
@@ -364,7 +364,7 @@ fn websocket_url() -> String {
     } else {
         base
     };
-    let path = std::env::var("LOCAL_WHISPER_WS_PATH")
+    let path = std::env::var("TRANSCRIBLERR_WS_PATH")
         .ok()
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| "/api/ws/audio".to_string());

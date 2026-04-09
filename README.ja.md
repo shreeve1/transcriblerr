@@ -1,4 +1,4 @@
-# Local Whisper
+# Transcriblerr
 
 Apple Silicon (M1/M2/M3) 向けに最適化した、完全ローカル動作の高精度・低遅延文字起こしアプリです。
 Web 会議や YouTube などのシステム音声も、マイク入力も、そのままテキスト化できます。
@@ -28,7 +28,7 @@ https://github.com/user-attachments/assets/f6268cb3-1534-42b4-9070-f0ae29a6dcf0
 
    ```bash
    git clone <repository-url>
-   cd local-whisper
+   cd transcriblerr
    git submodule update --init --recursive
    ```
 

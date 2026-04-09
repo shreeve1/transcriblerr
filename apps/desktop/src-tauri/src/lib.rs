@@ -60,7 +60,7 @@ fn speaker_embedding_model_dir() -> Result<std::path::PathBuf, String> {
     let home = std::env::var("HOME")
         .map_err(|_| "Failed to resolve HOME".to_string())?;
     let dir = std::path::PathBuf::from(home)
-        .join("Library/Application Support/local-whisper/models/speaker-embedding");
+        .join("Library/Application Support/transcriblerr/models/speaker-embedding");
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create speaker embedding model dir: {}", e))?;
     Ok(dir)

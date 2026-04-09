@@ -17,7 +17,7 @@ class SystemAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
 
         guard let display = content.displays.first else {
             throw NSError(
-                domain: "com.local-whisper.system-audio",
+                domain: "com.transcriblerr.system-audio",
                 code: -1,
                 userInfo: [NSLocalizedDescriptionKey: "No displays found for capture"]
             )
@@ -38,7 +38,7 @@ class SystemAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
 
-        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "com.local-whisper.audio"))
+        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "com.transcriblerr.audio"))
 
         try await stream.startCapture()
 

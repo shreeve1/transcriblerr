@@ -53,7 +53,7 @@ jobs:
         with:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
-          releaseName: local-whisper ${{ github.ref_name }}
+          releaseName: transcriblerr ${{ github.ref_name }}
           releaseBody: |
             Automated release for ${{ github.ref_name }}.
           releaseDraft: false

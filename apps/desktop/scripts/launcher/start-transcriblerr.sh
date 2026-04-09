@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="/Users/james/local-whisper/apps/desktop"
+APP_DIR="/Users/james/transcriblerr/apps/desktop"
 LOG_DIR="$APP_DIR/.pi/tmp"
 LOG_FILE="$LOG_DIR/tauri-dev.log"
 LAUNCHER_LOG="$LOG_DIR/launcher.log"
@@ -56,7 +56,7 @@ stop_existing_processes() {
   local patterns=(
     "$APP_DIR/node_modules/.*/tauri.js dev"
     "$APP_DIR/node_modules/.*/vite/bin/vite.js"
-    "/Users/james/local-whisper/target/debug/local-whisper"
+    "/Users/james/transcriblerr/target/debug/transcriblerr"
   )
 
   for pattern in "${patterns[@]}"; do
@@ -68,7 +68,7 @@ stop_existing_processes() {
 
   if [[ "$stopped" -eq 1 ]]; then
     for _ in {1..24}; do
-      if ! pgrep -f "/Users/james/local-whisper/target/debug/local-whisper" >/dev/null 2>&1 \
+      if ! pgrep -f "/Users/james/transcriblerr/target/debug/transcriblerr" >/dev/null 2>&1 \
         && ! pgrep -f "$APP_DIR/node_modules/.*/tauri.js dev" >/dev/null 2>&1 \
         && ! pgrep -f "$APP_DIR/node_modules/.*/vite/bin/vite.js" >/dev/null 2>&1; then
         break

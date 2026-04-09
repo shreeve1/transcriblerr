@@ -1,6 +1,6 @@
-# Local Whisper
+# Transcriblerr
 
-Local Whisper is a high-accuracy, low-latency transcription app that runs entirely on Apple Silicon (M1/M2/M3).
+Transcriblerr is a high-accuracy, low-latency transcription app that runs entirely on Apple Silicon (M1/M2/M3).
 It captures both microphone input and system audio (e.g., web meetings, YouTube) without sending data to the cloud.
 
 
@@ -28,7 +28,7 @@ It captures both microphone input and system audio (e.g., web meetings, YouTube)
 
    ```bash
    git clone <repository-url>
-   cd local-whisper
+   cd transcriblerr
    git submodule update --init --recursive
    ```
 

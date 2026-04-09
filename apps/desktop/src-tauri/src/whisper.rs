@@ -122,7 +122,7 @@ pub const REMOTE_MODELS: &[RemoteModel] = &[
 ];
 
 fn model_directory() -> Result<PathBuf, String> {
-    if let Ok(custom_dir) = std::env::var("LOCAL_WHISPER_MODEL_DIR") {
+    if let Ok(custom_dir) = std::env::var("TRANSCRIBLERR_MODEL_DIR") {
         let trimmed = custom_dir.trim();
         if !trimmed.is_empty() {
             return Ok(PathBuf::from(trimmed));
@@ -133,14 +133,14 @@ fn model_directory() -> Result<PathBuf, String> {
     {
         let home = std::env::var("HOME")
             .map_err(|_| "Failed to resolve HOME for model directory".to_string())?;
-        return Ok(PathBuf::from(home).join("Library/Application Support/local-whisper/models"));
+        return Ok(PathBuf::from(home).join("Library/Application Support/transcriblerr/models"));
     }
 
     #[cfg(target_os = "windows")]
     {
         let appdata = std::env::var("APPDATA")
             .map_err(|_| "Failed to resolve APPDATA for model directory".to_string())?;
-        return Ok(PathBuf::from(appdata).join("local-whisper/models"));
+        return Ok(PathBuf::from(appdata).join("transcriblerr/models"));
     }
 
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
@@ -148,12 +148,12 @@ fn model_directory() -> Result<PathBuf, String> {
         if let Ok(xdg_data_home) = std::env::var("XDG_DATA_HOME") {
             let trimmed = xdg_data_home.trim();
             if !trimmed.is_empty() {
-                return Ok(PathBuf::from(trimmed).join("local-whisper/models"));
+                return Ok(PathBuf::from(trimmed).join("transcriblerr/models"));
             }
         }
         let home = std::env::var("HOME")
             .map_err(|_| "Failed to resolve HOME for model directory".to_string())?;
-        Ok(PathBuf::from(home).join(".local/share/local-whisper/models"))
+        Ok(PathBuf::from(home).join(".local/share/transcriblerr/models"))
     }
 }
 
