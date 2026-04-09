@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 mod audio;
 mod commands;
+mod diarization;
 mod mic;
 mod screen_recording;
 mod system_audio;
@@ -36,6 +37,8 @@ pub use summarization::{SummarizationConfigUpdate, SummarizationConfigView};
 static RECORDING_SAVE_PATH: OnceCell<Arc<ParkingMutex<Option<String>>>> = OnceCell::new();
 pub(crate) static APP_HANDLE: OnceCell<AppHandle> = OnceCell::new();
 static SHUTDOWN_CLEANED: AtomicBool = AtomicBool::new(false);
+static DIARIZATION_MANAGER: OnceCell<Arc<ParkingMutex<diarization::DiarizationManager>>> = OnceCell::new();
+
 
 fn load_backend_env() {
     // Rust side does not auto-load .env; load common locations explicitly.
@@ -52,6 +55,7 @@ pub(crate) fn emit_transcription_segment(
     message_id: u64,
     is_final: bool,
     source: String,
+    speaker_id: Option<String>,
 ) -> Result<(), String> {
     if text.trim().is_empty() {
         return Ok(());
@@ -77,6 +81,7 @@ pub(crate) fn emit_transcription_segment(
         message_id: message_id.clone(),
         is_final,
         source: source.clone(),
+        speaker_id,
     };
 
     // Save to a txt file while recording is active.

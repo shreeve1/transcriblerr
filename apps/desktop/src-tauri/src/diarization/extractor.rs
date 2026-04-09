@@ -51,8 +51,8 @@ impl SpeakerEmbeddingExtractor {
             return None;
         }
 
-        let mut stream = self.extractor.create_stream()?;
-        stream.push_raw_samples(audio_16k_mono);
+        let stream = self.extractor.create_stream()?;
+        stream.accept_waveform(16000, audio_16k_mono);
 
         if !self.extractor.is_ready(&stream) {
             warn!("SpeakerEmbeddingExtractor: stream not ready after feeding audio");
