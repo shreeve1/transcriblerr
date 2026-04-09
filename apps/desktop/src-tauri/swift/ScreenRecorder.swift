@@ -36,7 +36,7 @@ class ScreenRecorder: NSObject, SCStreamDelegate, SCStreamOutput {
         config.channelCount = 2
         config.excludesCurrentProcessAudio = false
 
-        // macOS 15 SDK 未満でもコンパイルできるように KVC で設定する
+        // Use KVC to set property for compatibility with pre-macOS 15 SDK
         if #available(macOS 15.0, *) {
             config.setValue(true, forKey: "captureMicrophone")
         }
@@ -78,7 +78,7 @@ class ScreenRecorder: NSObject, SCStreamDelegate, SCStreamOutput {
         let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
         audioInput.expectsMediaDataInRealTime = true
 
-        // マイク用の別のオーディオ入力
+        // Separate audio input for microphone
         let microphoneInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
         microphoneInput.expectsMediaDataInRealTime = true
 
@@ -104,7 +104,7 @@ class ScreenRecorder: NSObject, SCStreamDelegate, SCStreamOutput {
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "com.local-whisper.screen"))
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "com.local-whisper.recording-audio"))
 
-        // macOS 15 SDK 未満でもコンパイルできるように enum case を直接参照しない
+        // Avoid referencing enum case directly for pre-macOS 15 SDK compatibility
         if #available(macOS 15.0, *), let microphoneType = SCStreamOutputType(rawValue: 2) {
             try stream.addStreamOutput(
                 self,
@@ -171,7 +171,7 @@ class ScreenRecorder: NSObject, SCStreamDelegate, SCStreamOutput {
         }
 
         if #available(macOS 15.0, *), type.rawValue == 2 {
-            // マイク音声は専用のトラックに保存
+            // Save microphone audio to its dedicated track
             if let microphoneInput = self.microphoneInput, microphoneInput.isReadyForMoreMediaData {
                 microphoneInput.append(sampleBuffer)
             }

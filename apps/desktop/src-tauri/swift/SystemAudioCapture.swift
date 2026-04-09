@@ -25,7 +25,7 @@ class SystemAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
 
         print("Display found: \(display)")
 
-        // システム音声をキャプチャするには、displayとexcludingWindowsを使用
+        // Capture system audio using display and excludingWindows filter
         let filter = SCContentFilter(display: display, excludingWindows: [])
 
         let config = SCStreamConfiguration()
