@@ -31,6 +31,7 @@ interface TranscriptionSegment {
   messageId: number;
   isFinal: boolean;
   source: string;
+  speakerId?: string;
 }
 
 interface SessionTranscription {
@@ -38,6 +39,7 @@ interface SessionTranscription {
   sessionId: number;
   source: string;
   speaker: string;
+  speakerId?: string;
   messages: TranscriptionSegment[];
   audioChunks: Record<number, number[]>;
 }
@@ -517,6 +519,7 @@ function App() {
     user: "Me",
     system: "Remote",
   });
+  const speakerNameCacheRef = useRef<Record<string, string>>({});
   const transcriptionSuppressedForPlaybackRef = useRef(false);
   const copyFeedbackTimeoutRef = useRef<number | null>(null);
   const copyAllFeedbackTimeoutRef = useRef<number | null>(null);
@@ -581,11 +584,16 @@ function App() {
             audioChunks: upsertAudioChunks(session.audioChunks),
           };
         } else {
+          const speakerLabel = segment.speakerId
+            ? (speakerNameCacheRef.current[segment.speakerId] || segment.speakerId.replace("_", " ").replace(/^\w/, c => c.toUpperCase()))
+            : (sourceDefaultSpeakerRef.current[segment.source] ?? sourceLabel(segment.source));
+
           sessions.push({
             sessionKey,
             sessionId: segment.sessionId,
             source: segment.source,
-            speaker: sourceDefaultSpeakerRef.current[segment.source] ?? sourceLabel(segment.source),
+            speaker: speakerLabel,
+            speakerId: segment.speakerId ?? undefined,
             messages: [segment],
             audioChunks: segment.audioData?.length
               ? { [segment.messageId]: segment.audioData }
@@ -651,6 +659,10 @@ function App() {
       const target = prev.find(s => s.sessionKey === sessionKey);
       if (target) {
         sourceDefaultSpeakerRef.current = { ...sourceDefaultSpeakerRef.current, [target.source]: name };
+        // If this session has a backend speaker ID, rename via backend
+        if (target.speakerId) {
+          invoke("rename_speaker", { speakerId: target.speakerId, displayName: name }).catch(() => {});
+        }
       }
       return prev.map(s =>
         s.sessionKey === sessionKey ? { ...s, speaker: name } : s
@@ -908,6 +920,23 @@ function App() {
         startedRecording = true;
         await invoke("start_system_audio");
         startedSystemAudio = true;
+        // Fetch known speakers for diarization display names
+        try {
+          const speakers = await invoke<Array<{ speaker_id: string; display_name: string; utterance_count: number }>>("get_speakers");
+          const cache: Record<string, string> = {};
+          const names: string[] = [];
+          for (const s of speakers) {
+            cache[s.speaker_id] = s.display_name;
+            names.push(s.display_name);
+          }
+          speakerNameCacheRef.current = { ...speakerNameCacheRef.current, ...cache };
+          if (names.length > 0) {
+            setParticipants(prev => {
+              const merged = new Set([...prev, ...names]);
+              return Array.from(merged);
+            });
+          }
+        } catch { /* diarization may not be enabled */ }
         setIsRecordingActive(true);
         setError("");
       } catch (err) {
@@ -1101,6 +1130,23 @@ function App() {
       },
     );
 
+    const unlistenSpeakerUpdated = listen<{ speakerId: string; displayName: string }>(
+      "speaker-updated",
+      (event) => {
+        const { speakerId, displayName } = event.payload;
+        // Update cache
+        speakerNameCacheRef.current = { ...speakerNameCacheRef.current, [speakerId]: displayName };
+        // Update all sessions with this speakerId
+        setTranscriptions(prev =>
+          prev.map(s =>
+            s.speakerId === speakerId ? { ...s, speaker: displayName } : s
+          )
+        );
+        // Update participants list
+        setParticipants(prev => prev.includes(displayName) ? prev : [...prev, displayName]);
+      },
+    );
+
     loadSettingsFromLocalStorage();
     refreshAllModels();
     loadLanguages();
@@ -1118,6 +1164,7 @@ function App() {
       unlistenVoiceActivity.then((fn) => fn());
       unlistenBackendError.then((fn) => fn());
       unlistenModelInstallProgress.then((fn) => fn());
+      unlistenSpeakerUpdated.then((fn) => fn());
     };
   }, [
     finalizeAllInProgressMessages,
