@@ -319,11 +319,20 @@ pub fn queue_transcription(state: &RecordingState, is_final: bool) {
     );
 }
 
-pub fn stop_transcription_worker(state: &mut RecordingState) {
-    if let Some(tx) = state.transcription_tx.take() {
+pub fn stop_transcription_worker_parts(
+    tx: Option<Sender<TranscriptionCommand>>,
+    handle: Option<JoinHandle<()>>,
+) {
+    if let Some(tx) = tx {
         let _ = tx.send(TranscriptionCommand::Stop);
     }
-    if let Some(handle) = state.transcription_handle.take() {
+    if let Some(handle) = handle {
         let _ = handle.join();
     }
+}
+
+pub fn stop_transcription_worker(state: &mut RecordingState) {
+    let tx = state.transcription_tx.take();
+    let handle = state.transcription_handle.take();
+    stop_transcription_worker_parts(tx, handle);
 }

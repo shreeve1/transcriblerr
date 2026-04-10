@@ -18,6 +18,10 @@ pub struct SummarizationConfig {
     pub timeout_secs: u64,
     #[serde(default)]
     pub custom_system_prompt: Option<String>,
+    #[serde(default)]
+    pub summary_save_path: Option<String>,
+    #[serde(default)]
+    pub auto_save_summary: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +33,10 @@ pub struct SummarizationConfigView {
     pub has_api_key: bool,
     #[serde(default)]
     pub custom_system_prompt: Option<String>,
+    #[serde(default)]
+    pub summary_save_path: Option<String>,
+    #[serde(default)]
+    pub auto_save_summary: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +47,10 @@ pub struct SummarizationConfigUpdate {
     pub model: String,
     #[serde(default)]
     pub custom_system_prompt: Option<String>,
+    #[serde(default)]
+    pub summary_save_path: Option<String>,
+    #[serde(default)]
+    pub auto_save_summary: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -103,6 +115,8 @@ fn default_config() -> SummarizationConfig {
             .unwrap_or_else(|| "gpt-4o-mini".to_string()),
         timeout_secs: env_u64("LLM_SUMMARY_TIMEOUT_SECS", 30),
         custom_system_prompt: None,
+        summary_save_path: None,
+        auto_save_summary: false,
     }
 }
 
@@ -158,6 +172,8 @@ pub fn get_config_view() -> Result<SummarizationConfigView, String> {
         model: guard.model.clone(),
         has_api_key: env_api_key().is_some(),
         custom_system_prompt: guard.custom_system_prompt.clone(),
+        summary_save_path: guard.summary_save_path.clone(),
+        auto_save_summary: guard.auto_save_summary,
     })
 }
 
@@ -178,6 +194,17 @@ pub fn set_config(app_handle: &AppHandle, update: SummarizationConfigUpdate) -> 
                 Some(trimmed)
             }
         });
+    guard.summary_save_path = update
+        .summary_save_path
+        .and_then(|value| {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+    guard.auto_save_summary = update.auto_save_summary;
 
     if guard.api_base_url.is_empty() {
         return Err("apiBaseUrl cannot be empty".to_string());
@@ -194,6 +221,8 @@ pub fn set_config(app_handle: &AppHandle, update: SummarizationConfigUpdate) -> 
         model: guard.model.clone(),
         has_api_key: env_api_key().is_some(),
         custom_system_prompt: guard.custom_system_prompt.clone(),
+        summary_save_path: guard.summary_save_path.clone(),
+        auto_save_summary: guard.auto_save_summary,
     })
 }
 
@@ -279,6 +308,49 @@ pub async fn summarize_transcript(transcript: String, language: String) -> Resul
             Err(map_err(kind, detail))
         }
     }
+}
+
+pub fn save_summary_to_file(path: &str, content: &str) -> Result<String, String> {
+    let file_path = std::path::Path::new(path);
+
+    if !file_path.is_absolute() {
+        return Err("Save path must be absolute".to_string());
+    }
+
+    // Validate the target is within the configured save directory
+    let config = config_handle()?;
+    let guard = config.lock();
+    let allowed_base = guard
+        .summary_save_path
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or("No summary save path configured")?;
+    let allowed_path = std::path::Path::new(allowed_base)
+        .canonicalize()
+        .map_err(|e| format!("Configured save path is invalid: {e}"))?;
+    drop(guard);
+
+    // Ensure parent directory exists so we can canonicalize the target's parent
+    let parent = file_path
+        .parent()
+        .ok_or("Invalid file path")?;
+    if !parent.exists() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory: {e}"))?;
+    }
+
+    let canonical_parent = parent
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve save path: {e}"))?;
+    if !canonical_parent.starts_with(&allowed_path) {
+        return Err("Save path must be within the configured summary save directory".to_string());
+    }
+
+    std::fs::write(file_path, content)
+        .map_err(|e| format!("Failed to write summary file: {e}"))?;
+
+    info!("Summary saved successfully");
+    Ok("Summary saved".to_string())
 }
 
 pub async fn provider_smoke_check() -> Result<String, String> {

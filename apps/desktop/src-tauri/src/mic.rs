@@ -8,15 +8,25 @@ use crate::audio::processing::finalize_active_session;
 use crate::audio::state::{recording_state, SileroVadState};
 use crate::audio::utils::resample_audio;
 use crate::transcription::spawn_transcription_worker;
-use crate::transcription::worker::stop_transcription_worker;
+use crate::transcription::worker::stop_transcription_worker_parts;
 
 pub async fn start_mic_stream(app_handle: AppHandle, language: Option<String>) -> Result<(), String> {
     let state = recording_state();
 
+    // Avoid joining the worker thread while holding the recording-state mutex.
+    // The worker can lock the same state while shutting down.
+    let (existing_tx, existing_handle) = {
+        let mut state_guard = state.lock();
+        (
+            state_guard.transcription_tx.take(),
+            state_guard.transcription_handle.take(),
+        )
+    };
+    stop_transcription_worker_parts(existing_tx, existing_handle);
+
     let (selected_device_name, current_mic_stream_id, configured_vad_threshold) = {
         let mut state_guard = state.lock();
 
-        stop_transcription_worker(&mut state_guard);
         let (tx, handle) = spawn_transcription_worker(app_handle.clone());
         state_guard.transcription_tx = Some(tx);
         state_guard.transcription_handle = Some(handle);

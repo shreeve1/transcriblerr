@@ -32,7 +32,7 @@ use audio::processing::finalize_active_session;
 use audio::state::{recording_state, try_recording_state, RecordingState};
 use mic::start_mic_stream;
 use transcription::TranscriptionSegment;
-use transcription::worker::stop_transcription_worker;
+use transcription::worker::stop_transcription_worker_parts;
 pub use summarization::{SummarizationConfigUpdate, SummarizationConfigView};
 
 static RECORDING_SAVE_PATH: OnceCell<Arc<ParkingMutex<Option<String>>>> = OnceCell::new();
@@ -494,16 +494,25 @@ pub(crate) async fn start_mic_impl(language: Option<String>) -> Result<(), Strin
 pub(crate) async fn stop_mic_impl() -> Result<(), String> {
     let state = recording_state();
 
-    let mut state_guard = state.lock();
-    if state_guard.is_muted {
-        return Ok(());
-    }
+    let (tx, handle) = {
+        let mut state_guard = state.lock();
+        if state_guard.is_muted {
+            return Ok(());
+        }
 
-    state_guard.is_muted = true;
+        state_guard.is_muted = true;
 
-    finalize_active_session(&mut state_guard, "mic_stopped");
-    stop_transcription_worker(&mut state_guard);
-    state_guard.vad_state = None;
+        finalize_active_session(&mut state_guard, "mic_stopped");
+        state_guard.vad_state = None;
+
+        (
+            state_guard.transcription_tx.take(),
+            state_guard.transcription_handle.take(),
+        )
+    };
+
+    // Join worker outside the state lock to avoid deadlocks.
+    stop_transcription_worker_parts(tx, handle);
 
     info!("Microphone muted");
 
@@ -686,7 +695,11 @@ pub(crate) async fn check_microphone_permission_impl() -> Result<bool, String> {
 pub(crate) async fn start_system_audio_impl() -> Result<(), String> {
     let state = try_recording_state().ok_or("Recording not initialized")?;
     let app_handle = APP_HANDLE.get().ok_or("App not initialized")?.clone();
-    system_audio::start_system_audio_capture(state.clone(), app_handle)
+    tauri::async_runtime::spawn_blocking(move || {
+        system_audio::start_system_audio_capture(state.clone(), app_handle)
+    })
+    .await
+    .map_err(|e| format!("System audio worker failed: {e}"))?
 }
 
 pub(crate) async fn stop_system_audio_impl() -> Result<(), String> {
@@ -811,6 +824,17 @@ pub(crate) async fn summarize_transcript_impl(
     summarization::summarize_transcript(transcript, language).await
 }
 
+pub(crate) async fn save_summary_to_file_impl(
+    path: String,
+    content: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        summarization::save_summary_to_file(&path, &content)
+    })
+    .await
+    .map_err(|e| format!("Save worker failed: {e}"))?
+}
+
 pub(crate) async fn summarization_provider_smoke_check_impl() -> Result<String, String> {
     summarization::provider_smoke_check().await
 }
@@ -850,16 +874,24 @@ fn cleanup_on_exit() {
     }
 
     if let Some(state) = try_recording_state() {
-        let mut state_guard = state.lock();
-        let system_audio_enabled = state_guard.system_audio_enabled;
-        let screen_recording_active = state_guard.screen_recording_active;
+        let (system_audio_enabled, screen_recording_active, tx, handle) = {
+            let mut state_guard = state.lock();
+            let system_audio_enabled = state_guard.system_audio_enabled;
+            let screen_recording_active = state_guard.screen_recording_active;
 
-        state_guard.is_muted = true;
-        state_guard.is_recording = false;
-        state_guard.vad_state = None;
-        state_guard.current_recording_dir = None;
-        stop_transcription_worker(&mut state_guard);
-        drop(state_guard);
+            state_guard.is_muted = true;
+            state_guard.is_recording = false;
+            state_guard.vad_state = None;
+            state_guard.current_recording_dir = None;
+
+            let tx = state_guard.transcription_tx.take();
+            let handle = state_guard.transcription_handle.take();
+
+            (system_audio_enabled, screen_recording_active, tx, handle)
+        };
+
+        // Join worker outside the state lock to avoid deadlocks.
+        stop_transcription_worker_parts(tx, handle);
 
         if system_audio_enabled {
             if let Err(err) = system_audio::stop_system_audio_capture(state.clone()) {

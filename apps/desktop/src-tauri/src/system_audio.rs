@@ -32,6 +32,7 @@ struct SystemAudioSession {
     last_vad_event_time: std::time::Instant,
     is_voice_active: bool,
     current_session_speaker_id: Option<String>,
+    last_diarization_samples: usize,
 }
 
 static mut SYSTEM_AUDIO_SESSION: Option<SystemAudioSession> = None;
@@ -48,6 +49,7 @@ fn reset_system_audio_session_tracking(session: &mut SystemAudioSession) {
     session.last_partial_emit_samples = 0;
     session.is_voice_active = false;
     session.current_session_speaker_id = None;
+    session.last_diarization_samples = 0;
 }
 
 fn last_system_audio_error_message() -> Option<String> {
@@ -166,14 +168,82 @@ fn process_system_audio_sample_local(
         }
     }
 
-    // Run diarization once we have enough voiced audio
+    // Run diarization periodically during an active system-audio session.
+    // If we detect a confident speaker change, split the session so the UI
+    // can render separate chat bubbles per speaker turn.
     #[cfg(feature = "diarization")]
-    if session.current_session_speaker_id.is_none() && session.session_audio.len() >= 24000 {
-        if let Some(manager) = crate::DIARIZATION_MANAGER.get() {
-            let mut guard = manager.lock();
-            let result = guard.process_utterance(&session.session_audio, 16000);
-            if let Some(sid) = result.speaker_id {
-                session.current_session_speaker_id = Some(sid);
+    {
+        const MIN_SAMPLES_FOR_DIARIZATION: usize = 32_000; // 2.0s @ 16kHz
+        const DIARIZATION_RECHECK_INTERVAL_SAMPLES: usize = 16_000; // 1.0s @ 16kHz
+        const SPEAKER_CHANGE_MIN_CONFIDENCE: f32 = 0.72;
+
+        let enough_audio = session.session_audio.len() >= MIN_SAMPLES_FOR_DIARIZATION;
+        let due_for_recheck = session.last_diarization_samples == 0
+            || session
+                .session_audio
+                .len()
+                .saturating_sub(session.last_diarization_samples)
+                >= DIARIZATION_RECHECK_INTERVAL_SAMPLES;
+
+        if enough_audio && due_for_recheck {
+            session.last_diarization_samples = session.session_audio.len();
+
+            let mut diarization_assignment: Option<(String, f32, bool)> = None;
+            if let Some(manager) = crate::DIARIZATION_MANAGER.get() {
+                let mut guard = manager.lock();
+                let result = guard.process_utterance(&session.session_audio, 16000);
+                if let Some(sid) = result.speaker_id.clone() {
+                    info!(
+                        "Diarization assigned {} (confidence {:.3}, reliable={}, samples={})",
+                        sid,
+                        result.confidence,
+                        result.is_reliable,
+                        session.session_audio.len()
+                    );
+                    diarization_assignment = Some((sid, result.confidence, result.is_reliable));
+                } else {
+                    info!(
+                        "Diarization produced no speaker (confidence {:.3}, reliable={}, samples={})",
+                        result.confidence,
+                        result.is_reliable,
+                        session.session_audio.len()
+                    );
+                }
+            }
+
+            if let Some((sid, confidence, is_reliable)) = diarization_assignment {
+                match session.current_session_speaker_id.as_deref() {
+                    None => {
+                        session.current_session_speaker_id = Some(sid);
+                    }
+                    Some(current_sid) if current_sid != sid => {
+                        if is_reliable && confidence >= SPEAKER_CHANGE_MIN_CONFIDENCE {
+                            let previous_sid = current_sid.to_string();
+                            info!(
+                                "Diarization speaker change: {} -> {} (confidence {:.3}, reliable={}) — splitting session",
+                                previous_sid,
+                                sid,
+                                confidence,
+                                is_reliable
+                            );
+
+                            finalize_system_audio_session(session, "speaker_change", app_handle, language);
+
+                            // Seed the next session with the newly detected speaker so
+                            // immediate partials after the split have a speaker label.
+                            session.current_session_speaker_id = Some(sid);
+                        } else {
+                            info!(
+                                "Diarization candidate speaker change ignored: {} -> {} (confidence {:.3}, reliable={})",
+                                current_sid,
+                                sid,
+                                confidence,
+                                is_reliable
+                            );
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -193,7 +263,14 @@ fn process_system_audio_sample_local(
     }
 
     if let Some(last_voice) = session.last_voice_sample {
-        if session.session_samples - last_voice >= SILENCE_TIMEOUT_SAMPLES {
+        // Use shorter silence timeout when diarization is active for better
+        // speaker turn detection (1.5s vs default 4s)
+        #[cfg(feature = "diarization")]
+        let timeout = 24000_usize; // 1.5s at 16kHz
+        #[cfg(not(feature = "diarization"))]
+        let timeout = SILENCE_TIMEOUT_SAMPLES;
+
+        if session.session_samples - last_voice >= timeout {
             finalize_system_audio_session(session, "silence_timeout", app_handle, language);
         }
     }
@@ -270,6 +347,8 @@ fn finalize_system_audio_session(
         session.session_samples = 0;
         session.last_partial_emit_samples = 0;
         session.last_voice_sample = None;
+        session.current_session_speaker_id = None;
+        session.last_diarization_samples = 0;
         return;
     }
 
@@ -305,6 +384,8 @@ fn finalize_system_audio_session(
     session.last_voice_sample = None;
     session.post_buffer_remaining = 0;
     session.is_voice_active = false;
+    session.current_session_speaker_id = None;
+    session.last_diarization_samples = 0;
 }
 
 pub fn finalize_active_system_audio_session(reason: &str) {
@@ -366,6 +447,7 @@ pub fn start_system_audio_capture(
             last_vad_event_time: std::time::Instant::now(),
             is_voice_active: false,
             current_session_speaker_id: None,
+            last_diarization_samples: 0,
         });
 
         APP_HANDLE = Some(app_handle);

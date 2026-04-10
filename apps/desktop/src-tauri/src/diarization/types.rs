@@ -16,8 +16,8 @@ pub struct DiarizationConfig {
 impl Default for DiarizationConfig {
     fn default() -> Self {
         Self {
-            similarity_threshold: 0.55,
-            max_speakers: 10,
+            similarity_threshold: 0.70,
+            max_speakers: 8,
             min_audio_seconds: 1.5,
         }
     }

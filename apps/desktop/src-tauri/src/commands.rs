@@ -176,6 +176,11 @@ async fn summarize_transcript(transcript: String, language: String) -> Result<St
 }
 
 #[tauri::command]
+async fn save_summary_to_file(path: String, content: String) -> Result<String, String> {
+    crate::save_summary_to_file_impl(path, content).await
+}
+
+#[tauri::command]
 async fn summarization_provider_smoke_check() -> Result<String, String> {
     crate::summarization_provider_smoke_check_impl().await
 }
@@ -285,6 +290,7 @@ pub fn register<R: Runtime>(builder: Builder<R>) -> Builder<R> {
         get_summarization_config,
         set_summarization_config,
         summarize_transcript,
+        save_summary_to_file,
         summarization_provider_smoke_check,
         set_transcription_suppressed,
         rename_speaker,

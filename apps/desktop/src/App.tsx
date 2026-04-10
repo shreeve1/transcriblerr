@@ -19,6 +19,7 @@ import {
   ChevronDown,
   ChevronUp,
   X,
+  Save,
 } from "lucide-react";
 import { TypingDots } from "./components/TypingDots";
 import "./App.css";
@@ -106,6 +107,8 @@ interface SummarizationConfig {
   model: string;
   hasApiKey: boolean;
   customSystemPrompt?: string;
+  summarySavePath?: string;
+  autoSaveSummary: boolean;
 }
 
 interface SummarizationConfigUpdate {
@@ -113,6 +116,8 @@ interface SummarizationConfigUpdate {
   apiBaseUrl: string;
   model: string;
   customSystemPrompt?: string;
+  summarySavePath?: string;
+  autoSaveSummary: boolean;
 }
 
 interface ModelInstallProgressEvent {
@@ -301,11 +306,13 @@ function SpeakerChip({
   participants,
   onChangeSpeaker,
   onAddParticipant,
+  onOpenChange,
 }: {
   speaker: string;
   participants: string[];
   onChangeSpeaker: (name: string) => void;
   onAddParticipant: (name: string) => void;
+  onOpenChange?: (isOpen: boolean) => void;
 }) {
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number } | null>(null);
   const [isAdding, setIsAdding] = useState(false);
@@ -313,6 +320,10 @@ function SpeakerChip({
   const chipRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const isOpen = dropdownPos !== null;
+
+  useEffect(() => {
+    onOpenChange?.(isOpen);
+  }, [isOpen, onOpenChange]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -331,18 +342,6 @@ function SpeakerChip({
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isOpen]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const scrollContainer = document.querySelector("[data-chat-scroll]");
-    const handleScroll = () => {
-      setDropdownPos(null);
-      setIsAdding(false);
-      setNewName("");
-    };
-    scrollContainer?.addEventListener("scroll", handleScroll);
-    return () => scrollContainer?.removeEventListener("scroll", handleScroll);
   }, [isOpen]);
 
   const handleToggle = () => {
@@ -501,6 +500,8 @@ function App() {
     model: "gpt-4o-mini",
     hasApiKey: false,
     customSystemPrompt: "",
+    summarySavePath: "",
+    autoSaveSummary: false,
   });
   const [isSavingSummaryConfig, setIsSavingSummaryConfig] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem("theme") || "light");
@@ -528,6 +529,7 @@ function App() {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const previousMessageCountRef = useRef(0);
   const previousScrollHeightRef = useRef(0);
+  const speakerChipOpenCountRef = useRef(0);
   const selectedModelInfo = availableModels.find(
     (model) => model.path === selectedModel,
   );
@@ -578,8 +580,16 @@ function App() {
 
         if (sessionIndex >= 0) {
           const session = sessions[sessionIndex];
+          const shouldAttachSpeaker = !session.speakerId && !!segment.speakerId;
+          const nextSpeakerId = session.speakerId ?? segment.speakerId ?? undefined;
+          const nextSpeaker = shouldAttachSpeaker && segment.speakerId
+            ? (speakerNameCacheRef.current[segment.speakerId] || segment.speakerId.replace(/_/g, " ").replace(/^\w/, c => c.toUpperCase()))
+            : session.speaker;
+
           sessions[sessionIndex] = {
             ...session,
+            speakerId: nextSpeakerId,
+            speaker: nextSpeaker,
             messages: upsertMessages(session.messages),
             audioChunks: upsertAudioChunks(session.audioChunks),
           };
@@ -668,6 +678,10 @@ function App() {
         s.sessionKey === sessionKey ? { ...s, speaker: name } : s
       );
     });
+  }, []);
+
+  const handleSpeakerChipOpenChange = useCallback((isOpen: boolean) => {
+    speakerChipOpenCountRef.current += isOpen ? 1 : -1;
   }, []);
 
   useEffect(() => {
@@ -836,6 +850,8 @@ function App() {
         apiBaseUrl: summaryConfig.apiBaseUrl,
         model: summaryConfig.model,
         customSystemPrompt: summaryConfig.customSystemPrompt || undefined,
+        summarySavePath: summaryConfig.summarySavePath || undefined,
+        autoSaveSummary: summaryConfig.autoSaveSummary,
       };
 
       await invoke<SummarizationConfig>("set_summarization_config", {
@@ -889,10 +905,6 @@ function App() {
     if (isRecordingBusy) return;
 
     if (!isRecordingActive) {
-      if (!recordingSaveEnabled || !recordingSavePath) {
-        setError("Enable save transcript and set a destination folder.");
-        return;
-      }
       if (transcriptionMode === "local" && !isInitialized) {
         setError("Initialize a model before starting recording.");
         return;
@@ -1218,7 +1230,7 @@ function App() {
       return;
     }
 
-    if (isAutoScrollPaused) {
+    if (isAutoScrollPaused || speakerChipOpenCountRef.current > 0) {
       setNewMessageCount(
         (prev) => prev + (incomingCount > 0 ? incomingCount : 1),
       );
@@ -1342,6 +1354,38 @@ function App() {
     }
   };
 
+  const [summarySaved, setSummarySaved] = useState(false);
+
+  const saveSummaryToFile = useCallback(
+    async (summary: string): Promise<boolean> => {
+      const savePath = summaryConfig.summarySavePath?.trim();
+      if (!savePath) {
+        setError("No summary save path configured. Set one in Summarization Settings.");
+        return false;
+      }
+      try {
+        const now = new Date();
+        const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}-${String(now.getSeconds()).padStart(2, "0")}`;
+        const normalizedPath = savePath.replace(/[/\\]+$/, "");
+        const filePath = `${normalizedPath}/summary-${timestamp}.md`;
+        await invoke<string>("save_summary_to_file", {
+          path: filePath,
+          content: summary,
+        });
+        setSummarySaved(true);
+        setTimeout(() => setSummarySaved(false), 2000);
+        return true;
+      } catch (err) {
+        console.error("Failed to save summary:", err);
+        setError(
+          `Failed to save summary: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return false;
+      }
+    },
+    [summaryConfig.summarySavePath, setError],
+  );
+
   const summarizeCurrentSession = async () => {
     if (isSummarizing) {
       return;
@@ -1407,10 +1451,16 @@ function App() {
         throw new Error("Unable to produce a summary");
       }
 
-      setSummaryPanelText(summary.trim());
+      const trimmedSummary = summary.trim();
+      setSummaryPanelText(trimmedSummary);
       setIsSummaryExpanded(true);
       if (usedSource !== "Local") {
         setError("");
+      }
+
+      if (summaryConfig.autoSaveSummary && summaryConfig.summarySavePath?.trim()) {
+        // Auto-save in background — don't let save failures affect the summary result
+        saveSummaryToFile(trimmedSummary).catch(() => {});
       }
     } catch (err) {
       console.error("Failed to summarize conversation:", err);
@@ -1864,6 +1914,21 @@ function App() {
           {isSummarizing ? "Summarizing..." : "Summarize"}
         </button>
 
+        {summaryPanelText && summaryConfig.summarySavePath?.trim() && (
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => saveSummaryToFile(summaryPanelText)}
+            title="Save summary to file"
+          >
+            {summarySaved ? (
+              <Check className="w-4 h-4" />
+            ) : (
+              <Save className="w-4 h-4" />
+            )}
+            {summarySaved ? "Saved" : "Save"}
+          </button>
+        )}
+
         <div className="flex-1"></div>
 
         <div className="flex items-center gap-2 shrink-0">
@@ -2128,6 +2193,7 @@ function App() {
                           participants={participants}
                           onChangeSpeaker={(name) => handleChangeSpeaker(session.sessionKey, name)}
                           onAddParticipant={handleAddParticipant}
+                          onOpenChange={handleSpeakerChipOpenChange}
                         />
                       </div>
                       <div
@@ -2542,6 +2608,51 @@ function App() {
                     />
                     <label className="label">
                       <span className="label-text-alt opacity-70">Leave empty to use the default prompt.</span>
+                    </label>
+                  </div>
+
+                  <div className="form-control">
+                    <label className="label">
+                      <span className="label-text">Summary Save Location</span>
+                    </label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      placeholder="/path/to/summaries"
+                      value={summaryConfig.summarySavePath || ""}
+                      onChange={(e) =>
+                        setSummaryConfig((prev) => ({
+                          ...prev,
+                          summarySavePath: e.target.value || undefined,
+                        }))
+                      }
+                    />
+                    <label className="label">
+                      <span className="label-text-alt opacity-70">
+                        Directory where summary files will be saved as timestamped markdown.
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="form-control">
+                    <label className="label cursor-pointer">
+                      <span className="label-text">Auto-save summaries to file</span>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-primary"
+                        checked={summaryConfig.autoSaveSummary}
+                        onChange={(e) =>
+                          setSummaryConfig((prev) => ({
+                            ...prev,
+                            autoSaveSummary: e.target.checked,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="label">
+                      <span className="label-text-alt opacity-70">
+                        When enabled, summaries are automatically saved when the Summarize button is pressed.
+                      </span>
                     </label>
                   </div>
 
