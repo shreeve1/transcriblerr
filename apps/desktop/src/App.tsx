@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -22,6 +22,7 @@ import {
   Save,
 } from "lucide-react";
 import { TypingDots } from "./components/TypingDots";
+import { groupTranscriptions } from "./groupTranscriptions";
 import "./App.css";
 
 interface TranscriptionSegment {
@@ -447,6 +448,11 @@ function App() {
   const [transcriptions, setTranscriptions] = useState<SessionTranscription[]>(
     [],
   );
+  const groupedTranscriptions = useMemo(
+    () => groupTranscriptions(transcriptions),
+    [transcriptions],
+  );
+
   const [error, setError] = useState("");
   const [playingSessionKey, setPlayingSessionKey] = useState<string | null>(
     null,
@@ -543,7 +549,8 @@ function App() {
   const upsertTranscriptionSegment = useCallback(
     (segment: TranscriptionSegment) => {
       setTranscriptions((prev) => {
-        const sessionKey = `${segment.source}-${segment.sessionId}`;
+        const speakerSuffix = segment.speakerId ? `-${segment.speakerId}` : "";
+        const sessionKey = `${segment.source}-${segment.sessionId}${speakerSuffix}`;
         const sessions = [...prev];
         const sessionIndex = sessions.findIndex(
           (s) => s.sessionKey === sessionKey,
@@ -2160,50 +2167,53 @@ function App() {
               </div>
             ) : (
               <div className="flex flex-col">
-                {transcriptions.map((session) => {
+                {groupedTranscriptions.map((group) => {
+                  const rep = group[0];
                   const alignment =
-                    session.source === "user" ? "chat-end" : "chat-start";
+                    rep.source === "user" ? "chat-end" : "chat-start";
                   const bubbleColor =
-                    session.source === "user"
+                    rep.source === "user"
                       ? "chat-bubble-primary"
                       : "chat-bubble-secondary";
-                  const sessionText = session.messages
-                    .map((message) => message.text.trim())
-                    .filter((text) => text.length > 0)
+                  const groupText = group
+                    .flatMap((s) => s.messages)
+                    .map((m) => m.text.trim())
+                    .filter((t) => t.length > 0)
                     .join(" ")
                     .replace(/\s+/g, " ")
                     .trim();
-                  const sessionAudio = session.messages
-                    .map(
-                      (message) => session.audioChunks[message.messageId] || [],
-                    )
-                    .flat();
-                  const hasInProgressMessage = session.messages.some(
-                    (message) => !message.isFinal,
+                  const groupAudio = group
+                    .flatMap((s) =>
+                      s.messages.flatMap(
+                        (m) => s.audioChunks[m.messageId] || [],
+                      ),
+                    );
+                  const hasInProgress = group.some((s) =>
+                    s.messages.some((m) => !m.isFinal),
                   );
 
                   return (
                     <div
-                      key={session.sessionKey}
+                      key={rep.sessionKey}
                       className={`chat ${alignment}`}
                     >
                       <div className="chat-header text-xs opacity-70">
                         <SpeakerChip
-                          speaker={session.speaker}
+                          speaker={rep.speaker}
                           participants={participants}
-                          onChangeSpeaker={(name) => handleChangeSpeaker(session.sessionKey, name)}
+                          onChangeSpeaker={(name) => handleChangeSpeaker(rep.sessionKey, name)}
                           onAddParticipant={handleAddParticipant}
                           onOpenChange={handleSpeakerChipOpenChange}
                         />
                       </div>
                       <div
                         className={`chat-bubble text-sm ${bubbleColor} ${
-                          hasInProgressMessage ? "opacity-70" : ""
+                          hasInProgress ? "opacity-70" : ""
                         }`}
                       >
                         <span className="flex-1 text-left">
-                          {sessionText}
-                          {hasInProgressMessage && (
+                          {groupText}
+                          {hasInProgress && (
                             <TypingDots inline className="ml-1" />
                           )}
                         </span>
@@ -2212,31 +2222,31 @@ function App() {
                         <button
                           onClick={() =>
                             handleCopySessionText(
-                              session.sessionKey,
-                              sessionText,
+                              rep.sessionKey,
+                              groupText,
                             )
                           }
                           className="btn btn-ghost btn-xs btn-circle"
                           title={
-                            copiedSessionKey === session.sessionKey
+                            copiedSessionKey === rep.sessionKey
                               ? "Copied"
                               : "Copy"
                           }
                         >
-                          {copiedSessionKey === session.sessionKey ? (
+                          {copiedSessionKey === rep.sessionKey ? (
                             <Check className="w-3 h-3" />
                           ) : (
                             <Copy className="w-3 h-3" />
                           )}
                         </button>
-                        {sessionAudio.length > 0 && (
+                        {groupAudio.length > 0 && (
                           <button
                             onClick={() =>
-                              playSessionAudio(sessionAudio, session.sessionKey)
+                              playSessionAudio(groupAudio, rep.sessionKey)
                             }
                             className="btn btn-ghost btn-xs btn-circle"
                           >
-                            {playingSessionKey === session.sessionKey ? (
+                            {playingSessionKey === rep.sessionKey ? (
                               <Square className="w-3 h-3" />
                             ) : (
                               <Play className="w-3 h-3" />
@@ -2246,7 +2256,7 @@ function App() {
 
                         <time className="text-[10px] opacity-60">
                           {new Date(
-                            session.messages[0].timestamp,
+                            rep.messages[0].timestamp,
                           ).toLocaleTimeString([], {
                             hour: "2-digit",
                             minute: "2-digit",

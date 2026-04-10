@@ -67,7 +67,7 @@ pub fn spawn_transcription_worker(
                         }
                     }
 
-                    for (audio, language, source, _session_id_counter, speaker_id) in final_requests {
+                    for (audio, language, source, session_id_counter, speaker_id) in final_requests {
                         if let Err(err) = transcribe_and_emit(
                             &audio,
                             language.clone(),
@@ -75,6 +75,7 @@ pub fn spawn_transcription_worker(
                             true,
                             &app_handle,
                             speaker_id,
+                            Some(session_id_counter),
                         ) {
                             error!("Transcription worker error: {}", err);
                             emit_backend_error(
@@ -92,7 +93,7 @@ pub fn spawn_transcription_worker(
                         if sessions_with_final.contains(&key) {
                             continue;
                         }
-                        let (source, _session_id_counter) = key;
+                        let (source, session_id_counter) = key;
                         if let Err(err) = transcribe_and_emit(
                             &audio,
                             language.clone(),
@@ -100,6 +101,7 @@ pub fn spawn_transcription_worker(
                             is_final,
                             &app_handle,
                             speaker_id,
+                            Some(session_id_counter),
                         ) {
                             error!("Transcription worker error: {}", err);
                             emit_backend_error(
@@ -205,6 +207,7 @@ fn transcribe_and_emit(
     is_final: bool,
     app_handle: &AppHandle,
     speaker_id: Option<String>,
+    command_session_id: Option<u64>,
 ) -> Result<(), String> {
     let state =
         try_recording_state().ok_or_else(|| "Recording state not initialized".to_string())?;
@@ -220,10 +223,16 @@ fn transcribe_and_emit(
         (lang, source_state, transcription_mode)
     };
 
+    // Use the session_id from the command if provided (captures the value at
+    // queue time), otherwise fall back to the current shared-state value.
+    // This avoids a race where the caller eagerly increments session_id_counter
+    // before the worker processes the queued command.
+    let emit_session_id = command_session_id.unwrap_or(source_state.session_id_counter);
+
     let result = transcribe_and_emit_common(
         audio_data,
         &lang,
-        source_state.session_id_counter,
+        emit_session_id,
         is_final,
         app_handle,
         source.event_source(),
@@ -240,8 +249,12 @@ fn transcribe_and_emit(
         match result {
             Ok((new_transcribed_samples, next_message_id)) => {
                 if is_final {
-                    source_state_mut.session_id_counter =
-                        source_state_mut.session_id_counter.wrapping_add(1);
+                    // Only increment if we haven't already advanced past the
+                    // session_id we emitted (caller may have eagerly incremented).
+                    if source_state_mut.session_id_counter == emit_session_id {
+                        source_state_mut.session_id_counter =
+                            source_state_mut.session_id_counter.wrapping_add(1);
+                    }
                     source_state_mut.message_id_counter = 0;
                     source_state_mut.transcribed_samples = 0;
                 } else {
@@ -250,12 +263,11 @@ fn transcribe_and_emit(
                 }
             }
             Err(ref err) => {
-                // Keep session state healthy even when a final chunk fails.
-                // Otherwise stale transcribed_samples/session_id can poison
-                // subsequent chunks and make streaming appear to "lose track".
                 if is_final {
-                    source_state_mut.session_id_counter =
-                        source_state_mut.session_id_counter.wrapping_add(1);
+                    if source_state_mut.session_id_counter == emit_session_id {
+                        source_state_mut.session_id_counter =
+                            source_state_mut.session_id_counter.wrapping_add(1);
+                    }
                     source_state_mut.message_id_counter = 0;
                     source_state_mut.transcribed_samples = 0;
                 }

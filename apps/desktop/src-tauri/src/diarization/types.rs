@@ -16,8 +16,11 @@ pub struct DiarizationConfig {
 impl Default for DiarizationConfig {
     fn default() -> Self {
         Self {
-            similarity_threshold: 0.70,
-            max_speakers: 8,
+            // The 3dspeaker eres2net model produces cosine similarities in
+            // the 0.15–0.45 range; 0.70 caused every utterance to be treated
+            // as a new speaker and force-assigned once max_speakers was hit.
+            similarity_threshold: 0.35,
+            max_speakers: 16,
             min_audio_seconds: 1.5,
         }
     }
