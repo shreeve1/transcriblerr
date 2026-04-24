@@ -793,7 +793,6 @@ pub(crate) async fn get_screen_recording_status_impl() -> Result<bool, String> {
 pub(crate) async fn get_supported_languages_impl() -> Result<Vec<(String, String)>, String> {
     Ok(vec![
         ("auto".to_string(), "Auto Detect".to_string()),
-        ("ja".to_string(), "Japanese".to_string()),
         ("en".to_string(), "English".to_string()),
         ("zh".to_string(), "Chinese".to_string()),
         ("ko".to_string(), "Korean".to_string()),

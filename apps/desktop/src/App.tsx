@@ -268,7 +268,6 @@ const summarizeLocally = (messages: (TranscriptionSegment & { speaker: string })
 
 const LANGUAGE_LABELS: Record<string, string> = {
   auto: "Auto Detect",
-  ja: "Japanese",
   en: "English",
   zh: "Chinese",
   ko: "Korean",
@@ -501,9 +500,9 @@ function App() {
     null,
   );
   const [summaryConfig, setSummaryConfig] = useState<SummarizationConfig>({
-    enabled: false,
-    apiBaseUrl: "http://localhost:8317/v1",
-    model: "gpt-4o-mini",
+    enabled: true,
+    apiBaseUrl: "https://api.openai.com/v1",
+    model: "gpt-4o",
     hasApiKey: false,
     customSystemPrompt: "",
     summarySavePath: "",

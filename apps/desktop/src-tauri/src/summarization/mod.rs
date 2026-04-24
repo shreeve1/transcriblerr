@@ -106,13 +106,13 @@ fn env_api_key() -> Option<String> {
 
 fn default_config() -> SummarizationConfig {
     SummarizationConfig {
-        enabled: env_bool("LLM_SUMMARY_ENABLED", false),
+        enabled: env_bool("LLM_SUMMARY_ENABLED", true),
         api_base_url: env_string("LLM_SUMMARY_API_BASE_URL")
             .or_else(|| env_string("LLM_API_BASE_URL"))
-            .unwrap_or_else(|| "http://localhost:8317/v1".to_string()),
+            .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
         model: env_string("LLM_SUMMARY_MODEL")
             .or_else(|| env_string("LLM_MODEL"))
-            .unwrap_or_else(|| "gpt-4o-mini".to_string()),
+            .unwrap_or_else(|| "gpt-4o".to_string()),
         timeout_secs: env_u64("LLM_SUMMARY_TIMEOUT_SECS", 30),
         custom_system_prompt: None,
         summary_save_path: None,

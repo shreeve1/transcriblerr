@@ -5,7 +5,7 @@ use log::warn;
 use reqwest::blocking::{multipart, Client};
 use serde_json::Value;
 
-const DEFAULT_LLM_API_BASE_URL: &str = "http://localhost:8317/v1";
+const DEFAULT_LLM_API_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_LLM_TIMEOUT_SECS: u64 = 45;
 const MIN_LLM_CHUNK_SAMPLES: usize = 3_200; // 200ms at 16kHz
 
@@ -14,8 +14,8 @@ fn is_cjk_char(ch: char) -> bool {
         ch as u32,
         0x3400..=0x4DBF // CJK Unified Ideographs Extension A
             | 0x4E00..=0x9FFF // CJK Unified Ideographs
-            | 0x3040..=0x309F // Hiragana
-            | 0x30A0..=0x30FF // Katakana
+            | 0x3040..=0x309F // Kana block 1
+            | 0x30A0..=0x30FF // Kana block 2
             | 0xAC00..=0xD7AF // Hangul Syllables
     )
 }

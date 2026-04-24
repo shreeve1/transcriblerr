@@ -116,7 +116,7 @@ impl WhisperContext {
     }
 
     pub fn transcribe(&self, audio_data: &[f32]) -> Result<String, WhisperError> {
-        self.transcribe_with_language(audio_data, "ja")
+        self.transcribe_with_language(audio_data, "en")
     }
 
     pub fn set_params(&mut self, params: WhisperParams) {

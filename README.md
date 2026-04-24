@@ -1,18 +1,19 @@
 # Transcriblerr
 
-Transcriblerr is a high-accuracy, low-latency transcription app that runs entirely on Apple Silicon (M1/M2/M3).
-It captures both microphone input and system audio (e.g., web meetings, YouTube) without sending data to the cloud.
+Transcriblerr is a high-accuracy, low-latency transcription app for Apple Silicon Macs (M1/M2/M3).
+It captures both microphone input and system audio (e.g., web meetings, YouTube), with offline local transcription and optional OpenAI-compatible transcription/summarization.
 
 
 
 ## Highlights
 
-- 🔒 **Fully offline** – No network access required, keeping sensitive audio on your machine.
+- 🔒 **Offline-first local mode** – Keep sensitive audio on your machine with whisper.cpp.
 - ⚡ **Optimized for low latency** – Built on whisper.cpp to make the most of Apple Silicon’s CPU/GPU.
 - 🎧 **Flexible sources** – Switch between microphone input and system audio with one tap.
 - 🎥 **Screen/audio capture ready** – Record meetings or streams and transcribe them immediately.
-- 🗣️ **Japanese-first experience** – Tuned for long-form Japanese speech, but works for other languages too.
+- 🗣️ **English-first experience** – Defaults to English transcription while still allowing other supported languages when needed.
 - 🪄 **UI-selectable models** – Choose between base / small / medium / large v3 turbo directly from the interface.
+- ☁️ **Optional OpenAI-compatible APIs** – Use OpenAI for transcription and AI summaries when configured.
 
 ## Requirements
 
@@ -39,7 +40,28 @@ It captures both microphone input and system audio (e.g., web meetings, YouTube)
    pnpm install
    ```
 
-3. **Run in development mode**
+3. **Optional: configure OpenAI-compatible APIs**
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Then set your API key in `apps/desktop/.env`:
+
+   ```env
+   LLM_API_BASE_URL=https://api.openai.com/v1
+   LLM_API_KEY=sk-...
+   LLM_TRANSCRIPTION_MODEL=whisper-1
+
+   LLM_SUMMARY_ENABLED=true
+   LLM_SUMMARY_API_BASE_URL=https://api.openai.com/v1
+   LLM_SUMMARY_MODEL=gpt-4o
+   LLM_SUMMARY_API_KEY=
+   ```
+
+   `LLM_SUMMARY_API_KEY` is optional. If empty, summaries use `LLM_API_KEY`. Do not commit `.env`; it is ignored by git. Restart the app after changing `.env`.
+
+4. **Run in development mode**
    ```bash
    pnpm tauri dev
    ```
@@ -60,21 +82,36 @@ Pick `medium` or `large v3 turbo` when accuracy matters most; choose `base` for 
 ## How to use
 
 1. Start the app with `pnpm tauri dev`.
-2. Select the input source (**Microphone** or **System Audio**).
-3. Hit **Start** to begin live transcription, and **Stop** when finished.
-4. Copy results instantly or save them as logs.
+2. Choose a transcription backend in **Settings → Microphone Settings → Transcription Backend**:
+   - **Local (offline Whisper)** uses an installed local model.
+   - **OpenAI API** uses the `LLM_*` values from `.env`.
+3. Select the input source (**Microphone** or **System Audio**).
+4. Hit **Start** to begin live transcription, and **Stop** when finished.
+5. Copy results instantly, save transcripts, or summarize the conversation.
 
 ## Troubleshooting
 
 - **No audio detected**: Check macOS “System Settings → Privacy & Security → Microphone” and allow access for the app.
 - **Slow performance**: Temporarily switch to a lighter model or close other CPU/GPU-intensive applications.
+- **OpenAI requests return 404**: Make sure `LLM_API_BASE_URL` and `LLM_SUMMARY_API_BASE_URL` are base URLs like `https://api.openai.com/v1`, not full endpoint URLs.
 
-## AI Summarization (OpenAI-compatible)
+## OpenAI-compatible transcription and summarization
 
-- Configure via **Settings → Summarization Settings**.
-- The app tries AI summarization first, then falls back to local summarization when unconfigured or transient errors occur.
-- API key is never returned to the frontend; UI only receives `hasApiKey`.
-- Startup defaults can be set in `apps/desktop/.env.example` (`LLM_SUMMARY_*`).
+Transcriblerr defaults API URLs to OpenAI-compatible endpoints for new installs:
+
+- Transcription base URL: `https://api.openai.com/v1`
+- Transcription model: `whisper-1`
+- Summary base URL: `https://api.openai.com/v1`
+- Summary model: `gpt-4o`
+
+Configuration lives in `apps/desktop/.env` and follows `apps/desktop/.env.example`. Use only the base URL, not the full endpoint path; the app appends `/audio/transcriptions` and `/chat/completions` internally.
+
+- OpenAI transcription is selected in **Settings → Microphone Settings → Transcription Backend**.
+- AI summaries are configured in **Settings → Summarization Settings**.
+- Leaving **Custom System Prompt** empty uses the built-in default summary prompt.
+- Summarization uses `LLM_SUMMARY_API_KEY` first, then falls back to `LLM_API_KEY`.
+- API keys are never returned to the frontend; the UI only receives `hasApiKey`.
+- Existing saved settings may keep older local URLs until updated in settings or reset.
 
 ## Credits
 

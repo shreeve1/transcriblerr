@@ -22,7 +22,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let model_path = &args[1];
     let audio_path = &args[2];
-    let language = args.get(3).map(String::as_str).unwrap_or("ja");
+    let language = args.get(3).map(String::as_str).unwrap_or("en");
 
     println!("Model:   {}", model_path);
     println!("Audio:   {}", audio_path);
