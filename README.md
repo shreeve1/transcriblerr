@@ -10,7 +10,7 @@ It captures both microphone input and system audio (e.g., web meetings, YouTube)
 - 🔒 **Offline-first local mode** – Keep sensitive audio on your machine with whisper.cpp.
 - ⚡ **Optimized for low latency** – Built on whisper.cpp to make the most of Apple Silicon’s CPU/GPU.
 - 🎧 **Flexible sources** – Switch between microphone input and system audio with one tap.
-- 🎥 **Screen/audio capture ready** – Record meetings or streams and transcribe them immediately.
+- 🔊 **System audio capture** – Capture meeting or media audio and transcribe it immediately.
 - 🗣️ **English-first experience** – Defaults to English transcription while still allowing other supported languages when needed.
 - 🪄 **UI-selectable models** – Choose between base / small / medium / large v3 turbo directly from the interface.
 - ☁️ **Optional OpenAI-compatible APIs** – Use OpenAI for transcription and AI summaries when configured.

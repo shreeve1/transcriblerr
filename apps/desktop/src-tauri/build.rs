@@ -14,10 +14,7 @@ fn main() {
 
     #[cfg(target_os = "macos")]
     {
-        let swift_files = vec![
-            "swift/SystemAudioCapture.swift",
-            "swift/ScreenRecorder.swift",
-        ];
+        let swift_files = vec!["swift/SystemAudioCapture.swift"];
         let out_dir = env::var("OUT_DIR").unwrap();
         let lib_name = "libSwiftBridge.a";
         let lib_path = format!("{}/{}", out_dir, lib_name);

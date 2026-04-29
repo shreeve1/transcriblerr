@@ -11,11 +11,11 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 mod audio;
+mod api_keys;
 mod commands;
 #[cfg(feature = "diarization")]
 mod diarization;
 mod mic;
-mod screen_recording;
 mod system_audio;
 mod transcription;
 mod whisper;
@@ -34,6 +34,7 @@ use mic::start_mic_stream;
 use transcription::TranscriptionSegment;
 use transcription::worker::stop_transcription_worker_parts;
 pub use summarization::{SummarizationConfigUpdate, SummarizationConfigView};
+pub use api_keys::ApiKeyStatus;
 
 static RECORDING_SAVE_PATH: OnceCell<Arc<ParkingMutex<Option<String>>>> = OnceCell::new();
 pub(crate) static APP_HANDLE: OnceCell<AppHandle> = OnceCell::new();
@@ -299,12 +300,15 @@ pub struct AudioDevice {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TranscriptionBackendConfig {
     pub mode: String,
+    pub model: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeAudioConfig {
     transcription_mode: String,
+    #[serde(default = "crate::transcription::llm_client::default_transcription_model")]
+    llm_transcription_model: String,
     vad_threshold: f32,
     partial_interval_seconds: f32,
 }
@@ -331,6 +335,7 @@ fn runtime_audio_config_path(app_handle: &AppHandle) -> Result<PathBuf, String> 
 fn runtime_audio_config_from_state(state: &RecordingState) -> RuntimeAudioConfig {
     RuntimeAudioConfig {
         transcription_mode: state.transcription_mode.clone(),
+        llm_transcription_model: state.llm_transcription_model.clone(),
         vad_threshold: state.vad_threshold,
         partial_interval_seconds: state.partial_transcript_interval_samples as f32
             / VAD_SAMPLE_RATE as f32,
@@ -371,6 +376,11 @@ fn apply_runtime_audio_config(config: &RuntimeAudioConfig) {
     let state = recording_state();
     let mut state_guard = state.lock();
     state_guard.transcription_mode = mode.clone();
+    state_guard.llm_transcription_model = config.llm_transcription_model.trim().to_string();
+    if state_guard.llm_transcription_model.is_empty() {
+        state_guard.llm_transcription_model =
+            transcription::llm_client::default_transcription_model();
+    }
     state_guard.vad_threshold = clamped_threshold;
     state_guard.partial_transcript_interval_samples = samples;
 
@@ -476,17 +486,15 @@ pub(crate) async fn start_mic_impl(language: Option<String>) -> Result<(), Strin
     let state = recording_state();
 
     {
-        let mut state_guard = state.lock();
+        let state_guard = state.lock();
         if !state_guard.is_muted {
             return Ok(());
         }
-        state_guard.is_muted = false;
     }
-
-    info!("Microphone unmuted");
 
     let app_handle = APP_HANDLE.get().ok_or("App not initialized")?.clone();
     start_mic_stream(app_handle, language).await?;
+    info!("Microphone unmuted");
 
     Ok(())
 }
@@ -494,7 +502,7 @@ pub(crate) async fn start_mic_impl(language: Option<String>) -> Result<(), Strin
 pub(crate) async fn stop_mic_impl() -> Result<(), String> {
     let state = recording_state();
 
-    let (tx, handle) = {
+    let mic_stream = {
         let mut state_guard = state.lock();
         if state_guard.is_muted {
             return Ok(());
@@ -504,15 +512,10 @@ pub(crate) async fn stop_mic_impl() -> Result<(), String> {
 
         finalize_active_session(&mut state_guard, "mic_stopped");
         state_guard.vad_state = None;
-
-        (
-            state_guard.transcription_tx.take(),
-            state_guard.transcription_handle.take(),
-        )
+        state_guard.mic_stream.take()
     };
 
-    // Join worker outside the state lock to avoid deadlocks.
-    stop_transcription_worker_parts(tx, handle);
+    drop(mic_stream);
 
     info!("Microphone muted");
 
@@ -549,11 +552,34 @@ pub(crate) fn emit_voice_activity_event(
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct BackendErrorEvent {
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    #[serde(rename = "fallbackMode", skip_serializing_if = "Option::is_none")]
+    fallback_mode: Option<String>,
 }
 
 pub(crate) fn emit_backend_error(app_handle: &AppHandle, message: impl Into<String>) {
+    emit_backend_error_event(app_handle, message.into(), None, None);
+}
+
+pub(crate) fn emit_backend_error_with_kind(
+    app_handle: &AppHandle,
+    kind: &str,
+    message: impl Into<String>,
+) {
+    emit_backend_error_event(app_handle, message.into(), Some(kind.to_string()), None);
+}
+
+fn emit_backend_error_event(
+    app_handle: &AppHandle,
+    message: String,
+    kind: Option<String>,
+    fallback_mode: Option<String>,
+) {
     let event = BackendErrorEvent {
-        message: message.into(),
+        message,
+        kind,
+        fallback_mode,
     };
 
     if let Err(emit_err) = app_handle.emit("backend-error", &event) {
@@ -616,6 +642,7 @@ pub(crate) async fn get_transcription_backend_config_impl(
     let state_guard = state.lock();
     Ok(TranscriptionBackendConfig {
         mode: state_guard.transcription_mode.clone(),
+        model: state_guard.llm_transcription_model.clone(),
     })
 }
 
@@ -631,6 +658,14 @@ pub(crate) async fn set_transcription_backend_config_impl(
     let mut state_guard = state.lock();
     let previous_mode = state_guard.transcription_mode.clone();
     state_guard.transcription_mode = normalized_mode.clone();
+    let model = config.model.trim();
+    if model.is_empty() {
+        return Err("model cannot be empty".to_string());
+    }
+    state_guard.llm_transcription_model = model.to_string();
+    if previous_mode != normalized_mode {
+        state_guard.llm_auth_blocked = false;
+    }
     drop(state_guard);
 
     if previous_mode != normalized_mode {
@@ -644,6 +679,37 @@ pub(crate) async fn set_transcription_backend_config_impl(
     info!("Updated transcription backend config: mode={}", normalized_mode);
 
     Ok(())
+}
+
+fn clear_llm_auth_block() {
+    if let Some(state) = try_recording_state() {
+        state.lock().llm_auth_blocked = false;
+    }
+}
+
+pub(crate) async fn get_api_key_status_impl() -> Result<ApiKeyStatus, String> {
+    api_keys::api_key_status()
+}
+
+pub(crate) async fn set_api_key_impl(api_key: String) -> Result<ApiKeyStatus, String> {
+    api_keys::set_stored_llm_api_key(&api_key)?;
+    clear_llm_auth_block();
+    api_keys::api_key_status()
+}
+
+pub(crate) async fn delete_api_key_impl() -> Result<ApiKeyStatus, String> {
+    api_keys::delete_stored_llm_api_key()?;
+    clear_llm_auth_block();
+    api_keys::api_key_status()
+}
+
+pub(crate) async fn test_api_key_impl(api_key: Option<String>) -> Result<String, String> {
+    let test_key = api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    summarization::provider_smoke_check_with_api_key(test_key).await
 }
 
 pub(crate) async fn set_streaming_config_impl(config: StreamingConfig) -> Result<(), String> {
@@ -753,43 +819,6 @@ pub(crate) async fn get_recording_save_config_impl() -> Result<(bool, Option<Str
     Ok((enabled, path))
 }
 
-pub(crate) async fn set_screen_recording_config_impl(enabled: bool) -> Result<(), String> {
-    let state = recording_state();
-
-    let mut state_guard = state.lock();
-    state_guard.screen_recording_enabled = enabled;
-
-    if enabled {
-        info!("Screen recording enabled");
-    } else {
-        info!("Screen recording disabled");
-    }
-
-    Ok(())
-}
-
-pub(crate) async fn get_screen_recording_config_impl() -> Result<bool, String> {
-    let state = recording_state();
-
-    let state_guard = state.lock();
-    Ok(state_guard.screen_recording_enabled)
-}
-
-pub(crate) async fn start_screen_recording_impl() -> Result<(), String> {
-    Ok(())
-}
-
-pub(crate) async fn stop_screen_recording_impl() -> Result<(), String> {
-    Ok(())
-}
-
-pub(crate) async fn get_screen_recording_status_impl() -> Result<bool, String> {
-    let state = recording_state();
-
-    let state_guard = state.lock();
-    Ok(state_guard.screen_recording_active)
-}
-
 pub(crate) async fn get_supported_languages_impl() -> Result<Vec<(String, String)>, String> {
     Ok(vec![
         ("auto".to_string(), "Auto Detect".to_string()),
@@ -873,21 +902,23 @@ fn cleanup_on_exit() {
     }
 
     if let Some(state) = try_recording_state() {
-        let (system_audio_enabled, screen_recording_active, tx, handle) = {
+        let (system_audio_enabled, mic_stream, tx, handle) = {
             let mut state_guard = state.lock();
             let system_audio_enabled = state_guard.system_audio_enabled;
-            let screen_recording_active = state_guard.screen_recording_active;
 
             state_guard.is_muted = true;
             state_guard.is_recording = false;
             state_guard.vad_state = None;
             state_guard.current_recording_dir = None;
 
+            let mic_stream = state_guard.mic_stream.take();
             let tx = state_guard.transcription_tx.take();
             let handle = state_guard.transcription_handle.take();
 
-            (system_audio_enabled, screen_recording_active, tx, handle)
+            (system_audio_enabled, mic_stream, tx, handle)
         };
+
+        drop(mic_stream);
 
         // Join worker outside the state lock to avoid deadlocks.
         stop_transcription_worker_parts(tx, handle);
@@ -898,11 +929,6 @@ fn cleanup_on_exit() {
             }
         }
 
-        if screen_recording_active {
-            if let Err(err) = screen_recording::stop_screen_recording() {
-                error!("Failed to stop screen recording during shutdown: {}", err);
-            }
-        }
     }
 
     info!("Application shutdown cleanup completed");
@@ -917,7 +943,6 @@ pub fn run() {
         .try_init();
 
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // Keep app running in background when the user clicks the close button.

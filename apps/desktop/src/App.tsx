@@ -1,439 +1,54 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   Mic,
   MicOff,
-  Play,
-  Square,
   Settings,
   Circle,
   StopCircle,
   Copy,
   Check,
   Trash2,
-  Moon,
-  Sun,
   MessageSquare,
   ChevronDown,
   ChevronUp,
   X,
   Save,
 } from "lucide-react";
-import { TypingDots } from "./components/TypingDots";
+import { TranscriptList } from "./components/TranscriptList";
+import { SettingsModal } from "./components/SettingsModal";
+import { ModelSetupPanel } from "./components/ModelSetupPanel";
+import { useTheme } from "./hooks/useTheme";
 import { groupTranscriptions } from "./groupTranscriptions";
+import type {
+  ApiKeyStatus,
+  AudioDevice,
+  BackendErrorEvent,
+  BackendMode,
+  ModelInfo,
+  ModelInstallProgressEvent,
+  RemoteModelStatus,
+  SessionTranscription,
+  StreamingConfig,
+  SummarizationConfig,
+  SummarizationConfigUpdate,
+  TranscriptionBackendConfig,
+  TranscriptionSegment,
+  VoiceActivityEvent,
+  VoiceActivityState,
+  WhisperParamsConfig,
+} from "./types";
+import {
+  formatSegmentTimestamp,
+  isSilentSummaryFallback,
+  normalizeBackendMode,
+  normalizeLanguageOptions,
+  normalizeMessageText,
+  sourceLabel,
+  summarizeLocally,
+} from "./utils/transcript";
 import "./App.css";
-
-interface TranscriptionSegment {
-  text: string;
-  timestamp: number;
-  audioData?: number[];
-  sessionId: number;
-  messageId: number;
-  isFinal: boolean;
-  source: string;
-  speakerId?: string;
-}
-
-interface SessionTranscription {
-  sessionKey: string;
-  sessionId: number;
-  source: string;
-  speaker: string;
-  speakerId?: string;
-  messages: TranscriptionSegment[];
-  audioChunks: Record<number, number[]>;
-}
-
-interface ModelInfo {
-  name: string;
-  path: string;
-  size: number;
-}
-
-interface RemoteModelStatus {
-  id: string;
-  name: string;
-  filename: string;
-  size: number;
-  description: string;
-  installed: boolean;
-  path?: string;
-}
-
-interface AudioDevice {
-  name: string;
-  is_default: boolean;
-}
-
-interface StreamingConfig {
-  vadThreshold: number;
-  partialIntervalSeconds: number;
-}
-
-interface VoiceActivityEvent {
-  source: string;
-  isActive: boolean;
-  sessionId: number;
-  timestamp: number;
-}
-
-type VoiceActivitySourceState = {
-  isActive: boolean;
-  sessionId: number | null;
-};
-
-type VoiceActivityState = Record<"user" | "system", VoiceActivitySourceState>;
-
-interface WhisperParamsConfig {
-  audioCtx: number;
-  temperature: number;
-}
-
-type BackendMode = "local" | "openai";
-
-interface TranscriptionBackendConfig {
-  mode: string;
-}
-
-interface BackendErrorEvent {
-  message: string;
-  fallbackMode?: BackendMode;
-}
-
-interface SummarizationConfig {
-  enabled: boolean;
-  apiBaseUrl: string;
-  model: string;
-  hasApiKey: boolean;
-  customSystemPrompt?: string;
-  summarySavePath?: string;
-  autoSaveSummary: boolean;
-}
-
-interface SummarizationConfigUpdate {
-  enabled: boolean;
-  apiBaseUrl: string;
-  model: string;
-  customSystemPrompt?: string;
-  summarySavePath?: string;
-  autoSaveSummary: boolean;
-}
-
-interface ModelInstallProgressEvent {
-  modelId: string;
-  filename: string;
-  downloadedBytes: number;
-  totalBytes: number;
-  percent: number;
-  status: "downloading" | "completed" | "error";
-  message?: string;
-}
-
-const SUMMARY_STOP_WORDS = new Set([
-  "about",
-  "after",
-  "again",
-  "also",
-  "because",
-  "been",
-  "being",
-  "could",
-  "from",
-  "have",
-  "into",
-  "just",
-  "more",
-  "most",
-  "only",
-  "other",
-  "over",
-  "some",
-  "than",
-  "that",
-  "them",
-  "then",
-  "there",
-  "these",
-  "they",
-  "this",
-  "very",
-  "were",
-  "what",
-  "when",
-  "where",
-  "which",
-  "while",
-  "will",
-  "with",
-  "would",
-]);
-
-const sourceLabel = (source: string) => {
-  if (source === "mic" || source === "user") return "You";
-  if (source === "system") return "System";
-  return source;
-};
-
-const normalizeMessageText = (value: string) =>
-  value
-    .replace(/\s+/g, " ")
-    .replace(/[\u0000-\u001F]+/g, " ")
-    .trim();
-
-const summarizeLocally = (messages: (TranscriptionSegment & { speaker: string })[]) => {
-  const normalized = messages
-    .map((message) => ({
-      ...message,
-      text: normalizeMessageText(message.text),
-    }))
-    .filter((message) => message.text.length > 0);
-
-  const dedupeSet = new Set<string>();
-  const uniqueMessages = normalized.filter((message) => {
-    const key = `${message.source}:${message.text.toLowerCase()}`;
-    if (dedupeSet.has(key)) {
-      return false;
-    }
-    dedupeSet.add(key);
-    return true;
-  });
-
-  if (uniqueMessages.length === 0) {
-    return "";
-  }
-
-  const frequency = new Map<string, number>();
-  for (const message of uniqueMessages) {
-    const words = message.text.toLowerCase().match(/[a-z0-9']+/g) ?? [];
-    for (const word of words) {
-      if (word.length <= 3 || SUMMARY_STOP_WORDS.has(word)) {
-        continue;
-      }
-      frequency.set(word, (frequency.get(word) ?? 0) + 1);
-    }
-  }
-
-  const topThemes = [...frequency.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([word]) => word);
-
-  const rankedMessages = uniqueMessages
-    .map((message) => {
-      const words = message.text.toLowerCase().match(/[a-z0-9']+/g) ?? [];
-      const keywordScore = words.reduce(
-        (total, word) => total + (frequency.get(word) ?? 0),
-        0,
-      );
-      const lengthScore = Math.min(words.length, 30) / 30;
-      return {
-        ...message,
-        score: keywordScore + lengthScore,
-      };
-    })
-    .sort((a, b) => b.score - a.score || a.timestamp - b.timestamp);
-
-  const highlights = rankedMessages.slice(0, Math.min(5, rankedMessages.length));
-  const possibleNextSteps = uniqueMessages
-    .filter((message) =>
-      /\b(todo|next|follow\s?up|need to|should|plan|must|let's)\b/i.test(
-        message.text,
-      ),
-    )
-    .slice(0, 3);
-
-  const lines: string[] = [];
-  lines.push(`Conversation summary (${uniqueMessages.length} final messages)`);
-  if (topThemes.length > 0) {
-    lines.push(`Themes: ${topThemes.join(", ")}`);
-  }
-  lines.push("");
-  lines.push("Highlights:");
-  for (const message of highlights) {
-    lines.push(`- ${message.speaker}: ${message.text}`);
-  }
-
-  if (possibleNextSteps.length > 0) {
-    lines.push("");
-    lines.push("Possible next steps:");
-    for (const message of possibleNextSteps) {
-      lines.push(`- ${message.speaker}: ${message.text}`);
-    }
-  }
-
-  return lines.join("\n");
-};
-
-const LANGUAGE_LABELS: Record<string, string> = {
-  auto: "Auto Detect",
-  en: "English",
-  zh: "Chinese",
-  ko: "Korean",
-  es: "Spanish",
-  fr: "French",
-  de: "German",
-  it: "Italian",
-  pt: "Portuguese",
-  ru: "Russian",
-};
-
-const normalizeLanguageOptions = (
-  languages: [string, string][],
-): [string, string][] =>
-  languages.map(([code, name]) => [code, LANGUAGE_LABELS[code] ?? name]);
-
-const normalizeBackendMode = (mode: string): BackendMode =>
-  mode === "local" || mode === "legacy_ws" ? "local" : "openai";
-
-const summaryErrorCode = (message: string): string | null => {
-  const match = message.match(/^(SUMMARY_[A-Z_]+):/);
-  return match ? match[1] : null;
-};
-
-const isSilentSummaryFallback = (message: string): boolean => {
-  const code = summaryErrorCode(message);
-  return (
-    code === "SUMMARY_UNCONFIGURED" ||
-    code === "SUMMARY_TRANSIENT" ||
-    code === "SUMMARY_PROVIDER"
-  );
-};
-
-function SpeakerChip({
-  speaker,
-  participants,
-  onChangeSpeaker,
-  onAddParticipant,
-  onOpenChange,
-}: {
-  speaker: string;
-  participants: string[];
-  onChangeSpeaker: (name: string) => void;
-  onAddParticipant: (name: string) => void;
-  onOpenChange?: (isOpen: boolean) => void;
-}) {
-  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number } | null>(null);
-  const [isAdding, setIsAdding] = useState(false);
-  const [newName, setNewName] = useState("");
-  const chipRef = useRef<HTMLDivElement>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  const isOpen = dropdownPos !== null;
-
-  useEffect(() => {
-    onOpenChange?.(isOpen);
-  }, [isOpen, onOpenChange]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        chipRef.current &&
-        !chipRef.current.contains(target) &&
-        dropdownRef.current &&
-        !dropdownRef.current.contains(target)
-      ) {
-        setDropdownPos(null);
-        setIsAdding(false);
-        setNewName("");
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isOpen]);
-
-  const handleToggle = () => {
-    if (isOpen) {
-      setDropdownPos(null);
-      setIsAdding(false);
-      setNewName("");
-      return;
-    }
-    const rect = chipRef.current?.getBoundingClientRect();
-    if (rect) {
-      setDropdownPos({ top: rect.bottom + 4, left: rect.left });
-    }
-  };
-
-  const handleSelect = (name: string) => {
-    onChangeSpeaker(name);
-    setDropdownPos(null);
-    setIsAdding(false);
-    setNewName("");
-  };
-
-  const handleAddNew = () => {
-    const trimmed = newName.trim();
-    if (!trimmed) return;
-    onAddParticipant(trimmed);
-    onChangeSpeaker(trimmed);
-    setDropdownPos(null);
-    setIsAdding(false);
-    setNewName("");
-  };
-
-  return (
-    <div className="inline-block" ref={chipRef}>
-      <button
-        className="badge badge-sm badge-outline cursor-pointer hover:badge-primary transition-colors"
-        onClick={handleToggle}
-        title="Change speaker"
-      >
-        {speaker}
-      </button>
-      {dropdownPos && createPortal(
-        <div
-          ref={dropdownRef}
-          className="fixed z-[9999] bg-base-100 border border-base-300 rounded-lg shadow-xl min-w-[140px] py-1"
-          style={{ top: dropdownPos.top, left: dropdownPos.left }}
-        >
-          {participants.map((name) => (
-            <button
-              key={name}
-              className={`w-full text-left px-3 py-1 text-xs hover:bg-base-300 transition-colors ${name === speaker ? "font-semibold text-primary" : ""}`}
-              onClick={() => handleSelect(name)}
-            >
-              {name}
-            </button>
-          ))}
-          <div className="border-t border-base-300 mt-1 pt-1">
-            {isAdding ? (
-              <form
-                className="px-2 flex gap-1"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  handleAddNew();
-                }}
-              >
-                <input
-                  type="text"
-                  className="input input-xs input-bordered flex-1 min-w-0"
-                  placeholder="Name..."
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  autoFocus
-                />
-                <button type="submit" className="btn btn-xs btn-primary">
-                  +
-                </button>
-              </form>
-            ) : (
-              <button
-                className="w-full text-left px-3 py-1 text-xs text-primary hover:bg-base-300 transition-colors"
-                onClick={() => setIsAdding(true)}
-              >
-                + Add new…
-              </button>
-            )}
-          </div>
-        </div>,
-        document.body
-      )}
-    </div>
-  );
-}
 
 function App() {
   const [isMuted, setIsMuted] = useState(true);
@@ -508,10 +123,17 @@ function App() {
     summarySavePath: "",
     autoSaveSummary: false,
   });
+  const [apiKeyStatus, setApiKeyStatus] = useState<ApiKeyStatus>({
+    hasStoredKey: false,
+    hasEnvKey: false,
+    hasAnyKey: false,
+  });
   const [isSavingSummaryConfig, setIsSavingSummaryConfig] = useState(false);
-  const [theme, setTheme] = useState(localStorage.getItem("theme") || "light");
+  const { theme, setTheme } = useTheme();
   const [transcriptionMode, setTranscriptionMode] =
     useState<BackendMode>("local");
+  const [transcriptionModel, setTranscriptionModel] =
+    useState("gpt-4o-transcribe");
   const [copiedAllHistory, setCopiedAllHistory] = useState(false);
   const [voiceActivity, setVoiceActivity] = useState<VoiceActivityState>({
     user: { isActive: false, sessionId: null },
@@ -531,6 +153,7 @@ function App() {
   const copyAllFeedbackTimeoutRef = useRef<number | null>(null);
   const streamingAutosaveTimeoutRef = useRef<number | null>(null);
   const lastAppliedStreamingConfigRef = useRef<StreamingConfig | null>(null);
+  const didRunInitialBackendLoadRef = useRef(false);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const previousMessageCountRef = useRef(0);
   const previousScrollHeightRef = useRef(0);
@@ -690,11 +313,6 @@ function App() {
     speakerChipOpenCountRef.current += isOpen ? 1 : -1;
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem("theme", theme);
-    document.documentElement.setAttribute("data-theme", theme);
-  }, [theme]);
-
   const loadStreamingConfig = useCallback(async () => {
     try {
       const config = await invoke<StreamingConfig>("get_streaming_config");
@@ -832,6 +450,7 @@ function App() {
         "get_transcription_backend_config",
       );
       setTranscriptionMode(normalizeBackendMode(config.mode));
+      setTranscriptionModel(config.model || "gpt-4o-transcribe");
     } catch (err) {
       console.error("Failed to load transcription backend config:", err);
     }
@@ -845,6 +464,15 @@ function App() {
       setSummaryConfig(config);
     } catch (err) {
       console.error("Failed to load summarization config:", err);
+    }
+  }, []);
+
+  const loadApiKeyStatus = useCallback(async () => {
+    try {
+      const status = await invoke<ApiKeyStatus>("get_api_key_status");
+      setApiKeyStatus(status);
+    } catch (err) {
+      console.error("Failed to load API key status:", err);
     }
   }, []);
 
@@ -878,14 +506,40 @@ function App() {
     }
   }, [loadSummarizationConfig, summaryConfig, setError]);
 
+  const saveApiKey = useCallback(
+    async (apiKey: string) => {
+      const status = await invoke<ApiKeyStatus>("set_api_key", { apiKey });
+      setApiKeyStatus(status);
+      await loadSummarizationConfig();
+      setError("");
+      return "API key saved";
+    },
+    [loadSummarizationConfig, setError],
+  );
+
+  const deleteApiKey = useCallback(async () => {
+    const status = await invoke<ApiKeyStatus>("delete_api_key");
+    setApiKeyStatus(status);
+    await loadSummarizationConfig();
+    setError("");
+    return "Saved API key deleted";
+  }, [loadSummarizationConfig, setError]);
+
+  const testApiKey = useCallback(async (apiKey?: string) => {
+    return await invoke<string>("test_api_key", {
+      apiKey: apiKey?.trim() ? apiKey : null,
+    });
+  }, []);
+
   const saveTranscriptionBackendConfig = useCallback(
-    async (mode: BackendMode) => {
+    async (mode: BackendMode, model = transcriptionModel) => {
       const backendMode = mode === "openai" ? "llm" : "local";
       try {
         await invoke("set_transcription_backend_config", {
-          config: { mode: backendMode },
+          config: { mode: backendMode, model },
         });
         setTranscriptionMode(mode);
+        setTranscriptionModel(model);
       } catch (err) {
         console.error("Failed to save transcription backend config:", err);
         setError(
@@ -895,7 +549,7 @@ function App() {
         );
       }
     },
-    [setError],
+    [setError, transcriptionModel],
   );
 
   const handleTranscriptionModeChange = async (nextMode: BackendMode) => {
@@ -905,6 +559,10 @@ function App() {
 
     finalizeAllInProgressMessages();
     await saveTranscriptionBackendConfig(nextMode);
+  };
+
+  const saveTranscriptionModelConfig = async (model: string) => {
+    await saveTranscriptionBackendConfig(transcriptionMode, model);
   };
 
   const toggleRecording = async () => {
@@ -1130,6 +788,17 @@ function App() {
         if (payload.message) {
           setError(payload.message);
         }
+        if (payload.kind === "mic_device_unavailable") {
+          setIsMuted(true);
+          setIsMicBusy(false);
+          setVoiceActivity((prev) => ({
+            ...prev,
+            user: {
+              isActive: false,
+              sessionId: prev.user.sessionId,
+            },
+          }));
+        }
         if (payload.fallbackMode === "local") {
           finalizeAllInProgressMessages();
           setTranscriptionMode("local");
@@ -1165,18 +834,6 @@ function App() {
       },
     );
 
-    loadSettingsFromLocalStorage();
-    refreshAllModels();
-    loadLanguages();
-    loadAudioDevices();
-    checkMicPermission();
-    loadStreamingConfig();
-    loadWhisperParams();
-    loadRecordingSaveConfig();
-
-    loadTranscriptionBackendConfig();
-    loadSummarizationConfig();
-
     return () => {
       unlistenTranscription.then((fn) => fn());
       unlistenVoiceActivity.then((fn) => fn());
@@ -1192,6 +849,25 @@ function App() {
     loadSummarizationConfig,
     upsertTranscriptionSegment,
   ]);
+
+  useEffect(() => {
+    if (didRunInitialBackendLoadRef.current) {
+      return;
+    }
+    didRunInitialBackendLoadRef.current = true;
+
+    loadSettingsFromLocalStorage();
+    void refreshAllModels();
+    void loadLanguages();
+    void loadAudioDevices();
+    void checkMicPermission();
+    void loadStreamingConfig();
+    void loadWhisperParams();
+    void loadRecordingSaveConfig();
+    void loadTranscriptionBackendConfig();
+    void loadSummarizationConfig();
+    void loadApiKeyStatus();
+  }, []);
 
   const getTotalMessageCount = useCallback(
     (sessions: SessionTranscription[]) =>
@@ -1544,22 +1220,6 @@ function App() {
     }
   };
 
-  const formatModelSize = (bytes: number) => {
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  };
-
-  const formatInstallProgress = (progress?: ModelInstallProgressEvent) => {
-    if (!progress) {
-      return "";
-    }
-    const total = progress.totalBytes > 0 ? progress.totalBytes : 1;
-    const percent = Math.max(
-      0,
-      Math.min(100, Number.isFinite(progress.percent) ? progress.percent : 0),
-    );
-    return `${percent.toFixed(1)}% (${formatModelSize(progress.downloadedBytes)} / ${formatModelSize(total)})`;
-  };
-
   const initializeWhisper = async () => {
     if (!selectedModel) return;
 
@@ -1700,13 +1360,6 @@ function App() {
         `Copy error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-  };
-
-  const formatSegmentTimestamp = (timestamp: number) => {
-    const millis = timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
-    return new Date(millis).toLocaleString("en-US", {
-      hour12: false,
-    });
   };
 
   const handleCopyAllHistory = async () => {
@@ -2069,89 +1722,14 @@ function App() {
             )}
 
             {needsModelSetup ? (
-              <div className="max-w-3xl mx-auto border border-base-300 rounded-xl p-4 bg-base-200/50 space-y-4">
-                <div>
-                  <p className="text-sm font-semibold">
-                    Install a Whisper model first
-                  </p>
-                  <p className="text-xs opacity-70 mt-1">
-                    In Local mode, microphone transcription cannot start without a model. Select one below and install it.
-                  </p>
-                </div>
-
-                {isLoadingRemoteModels ? (
-                  <div className="flex items-center gap-2 text-sm">
-                    <span className="loading loading-spinner loading-xs"></span>
-                    Loading model list...
-                  </div>
-                ) : remoteModels.length === 0 ? (
-                  <p className="text-sm opacity-70">
-                    Failed to fetch available models. Reload from Settings (Model Settings).
-                  </p>
-                ) : (
-                  <div className="space-y-3">
-                    {remoteModels.map((model) => {
-                      const progress = modelInstallProgress[model.id];
-                      const isInstalling = modelOperations[model.id];
-                      const showProgress =
-                        isInstalling && progress?.status === "downloading";
-                      return (
-                        <div
-                          key={model.id}
-                          className="border border-base-300 rounded-xl p-3 flex items-start justify-between gap-3"
-                        >
-                          <div>
-                            <p className="font-medium text-sm">{model.name}</p>
-                            <p className="text-xs opacity-70">
-                              {model.description}
-                            </p>
-                            <p className="text-xs opacity-60 mt-1">
-                              {formatModelSize(model.size)}
-                            </p>
-                            {showProgress && (
-                              <div className="mt-2 space-y-1">
-                                <progress
-                                  className="progress progress-primary w-40"
-                                  value={Math.max(
-                                    0,
-                                    Math.min(
-                                      100,
-                                      Number.isFinite(progress.percent)
-                                        ? progress.percent
-                                        : 0,
-                                    ),
-                                  )}
-                                  max={100}
-                                />
-                                <p className="text-[11px] opacity-70">
-                                  {formatInstallProgress(progress)}
-                                </p>
-                              </div>
-                            )}
-                          </div>
-                          <button
-                            className={`btn btn-xs ${model.installed ? "btn-outline" : "btn-primary"}`}
-                            onClick={() =>
-                              model.installed && model.path
-                                ? setSelectedModel(model.path)
-                                : handleInstallModel(model.id)
-                            }
-                            disabled={isInstalling}
-                          >
-                            {isInstalling
-                              ? progress?.status === "downloading"
-                                ? "Downloading..."
-                                : "Processing..."
-                              : model.installed
-                                ? "Use"
-                                : "Install"}
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+              <ModelSetupPanel
+                remoteModels={remoteModels}
+                modelOperations={modelOperations}
+                modelInstallProgress={modelInstallProgress}
+                isLoadingRemoteModels={isLoadingRemoteModels}
+                onSelectModel={setSelectedModel}
+                onInstallModel={handleInstallModel}
+              />
             ) : transcriptions.length === 0 &&
               !voiceActivity.user.isActive &&
               !voiceActivity.system.isActive ? (
@@ -2165,122 +1743,20 @@ function App() {
                 </p>
               </div>
             ) : (
-              <div className="flex flex-col">
-                {groupedTranscriptions.map((group) => {
-                  const rep = group[0];
-                  const alignment =
-                    rep.source === "user" ? "chat-end" : "chat-start";
-                  const bubbleColor =
-                    rep.source === "user"
-                      ? "chat-bubble-primary"
-                      : "chat-bubble-secondary";
-                  const groupText = group
-                    .flatMap((s) => s.messages)
-                    .map((m) => m.text.trim())
-                    .filter((t) => t.length > 0)
-                    .join(" ")
-                    .replace(/\s+/g, " ")
-                    .trim();
-                  const groupAudio = group
-                    .flatMap((s) =>
-                      s.messages.flatMap(
-                        (m) => s.audioChunks[m.messageId] || [],
-                      ),
-                    );
-                  const hasInProgress = group.some((s) =>
-                    s.messages.some((m) => !m.isFinal),
-                  );
-
-                  return (
-                    <div
-                      key={rep.sessionKey}
-                      className={`chat ${alignment}`}
-                    >
-                      <div className="chat-header text-xs opacity-70">
-                        <SpeakerChip
-                          speaker={rep.speaker}
-                          participants={participants}
-                          onChangeSpeaker={(name) => handleChangeSpeaker(rep.sessionKey, name)}
-                          onAddParticipant={handleAddParticipant}
-                          onOpenChange={handleSpeakerChipOpenChange}
-                        />
-                      </div>
-                      <div
-                        className={`chat-bubble text-sm ${bubbleColor} ${
-                          hasInProgress ? "opacity-70" : ""
-                        }`}
-                      >
-                        <span className="flex-1 text-left">
-                          {groupText}
-                          {hasInProgress && (
-                            <TypingDots inline className="ml-1" />
-                          )}
-                        </span>
-                      </div>
-                      <div className="chat-footer opacity-50 flex justify-between items-center">
-                        <button
-                          onClick={() =>
-                            handleCopySessionText(
-                              rep.sessionKey,
-                              groupText,
-                            )
-                          }
-                          className="btn btn-ghost btn-xs btn-circle"
-                          title={
-                            copiedSessionKey === rep.sessionKey
-                              ? "Copied"
-                              : "Copy"
-                          }
-                        >
-                          {copiedSessionKey === rep.sessionKey ? (
-                            <Check className="w-3 h-3" />
-                          ) : (
-                            <Copy className="w-3 h-3" />
-                          )}
-                        </button>
-                        {groupAudio.length > 0 && (
-                          <button
-                            onClick={() =>
-                              playSessionAudio(groupAudio, rep.sessionKey)
-                            }
-                            className="btn btn-ghost btn-xs btn-circle"
-                          >
-                            {playingSessionKey === rep.sessionKey ? (
-                              <Square className="w-3 h-3" />
-                            ) : (
-                              <Play className="w-3 h-3" />
-                            )}
-                          </button>
-                        )}
-
-                        <time className="text-[10px] opacity-60">
-                          {new Date(
-                            rep.messages[0].timestamp,
-                          ).toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </time>
-                      </div>
-                    </div>
-                  );
-                })}
-                {showUserActivityIndicator && (
-                  <div className="chat chat-end">
-                    <div className="chat-bubble chat-bubble-primary opacity-70 text-sm">
-                      <TypingDots className="mx-auto" />
-                    </div>
-                  </div>
-                )}
-                {showSystemActivityIndicator && (
-                  <div className="chat chat-start">
-                    <div className="chat-bubble chat-bubble-secondary opacity-70 text-sm">
-                      <TypingDots className="mx-auto" />
-                    </div>
-                  </div>
-                )}
-                <div ref={messagesEndRef} />
-              </div>
+              <TranscriptList
+                groupedTranscriptions={groupedTranscriptions}
+                participants={participants}
+                copiedSessionKey={copiedSessionKey}
+                playingSessionKey={playingSessionKey}
+                showUserActivityIndicator={showUserActivityIndicator}
+                showSystemActivityIndicator={showSystemActivityIndicator}
+                messagesEndRef={messagesEndRef}
+                onChangeSpeaker={handleChangeSpeaker}
+                onAddParticipant={handleAddParticipant}
+                onSpeakerChipOpenChange={handleSpeakerChipOpenChange}
+                onCopySessionText={handleCopySessionText}
+                onPlaySessionAudio={playSessionAudio}
+              />
             )}
           </div>
         </div>
@@ -2301,660 +1777,53 @@ function App() {
         )}
       </main>
 
-      {/* Settings Modal */}
       {showSettings && (
-        <dialog className="modal modal-open">
-          <div className="modal-box">
-            <h3 className="font-bold text-lg mb-4 flex items-center justify-between">
-              <span>Settings</span>
-              <label className="swap swap-rotate btn btn-ghost btn-circle btn-sm">
-                <input
-                  type="checkbox"
-                  checked={theme === "dark"}
-                  onChange={(e) =>
-                    setTheme(e.target.checked ? "dark" : "light")
-                  }
-                />
-                <Sun className="swap-off w-4 h-4" />
-                <Moon className="swap-on w-4 h-4" />
-              </label>
-            </h3>
-
-            <div className="space-y-3">
-              <details
-                className="collapse collapse-arrow bg-base-200/50 border border-base-300"
-                open
-              >
-                <summary className="collapse-title text-sm font-semibold">
-                  Model Settings
-                </summary>
-                <div className="collapse-content space-y-4">
-                  <div className="form-control">
-                    <label className="label">
-                        <span className="label-text">Selected Model</span>
-                    </label>
-                    <select
-                      value={selectedModel}
-                      onChange={(e) => setSelectedModel(e.target.value)}
-                      className="select select-bordered w-full"
-                    >
-                      {availableModels.map((model) => (
-                        <option key={model.path} value={model.path}>
-                          {model.name?.trim() || model.path}
-                        </option>
-                      ))}
-                    </select>
-                    {selectedModel && (
-                      <p className="text-xs opacity-60 mt-2 break-all">
-                        In use: {selectedModelDisplayName}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="label-text font-semibold">
-                        Available Models
-                      </span>
-                      <button
-                        className="btn btn-xs"
-                        onClick={refreshAllModels}
-                        disabled={isLoadingRemoteModels}
-                      >
-                        Refresh
-                      </button>
-                    </div>
-
-                    <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
-                      {isLoadingRemoteModels ? (
-                        <div className="flex items-center gap-2 text-sm">
-                          <span className="loading loading-spinner loading-xs"></span>
-                          Loading...
-                        </div>
-                      ) : remoteModels.length === 0 ? (
-                        <p className="text-sm opacity-60">
-                          No available models found
-                        </p>
-                      ) : (
-                        remoteModels.map((model) => {
-                          const progress = modelInstallProgress[model.id];
-                          const isInstalling = modelOperations[model.id];
-                          const showProgress =
-                            isInstalling && progress?.status === "downloading";
-                          return (
-                            <div
-                              key={model.id}
-                              className="border border-base-300 rounded-xl p-3 flex flex-col gap-2"
-                            >
-                              <div className="flex items-start justify-between gap-3">
-                                <div>
-                                  <p className="font-medium text-sm">
-                                    {model.name}
-                                  </p>
-                                  <p className="text-xs opacity-70">
-                                    {model.description}
-                                  </p>
-                                  <p className="text-xs opacity-60 mt-1">
-                                    {formatModelSize(model.size)}
-                                  </p>
-                                  {showProgress && (
-                                    <div className="mt-2 space-y-1">
-                                      <progress
-                                        className="progress progress-primary w-40"
-                                        value={Math.max(
-                                          0,
-                                          Math.min(
-                                            100,
-                                            Number.isFinite(progress.percent)
-                                              ? progress.percent
-                                              : 0,
-                                          ),
-                                        )}
-                                        max={100}
-                                      />
-                                      <p className="text-[11px] opacity-70">
-                                        {formatInstallProgress(progress)}
-                                      </p>
-                                    </div>
-                                  )}
-                                  {model.installed && model.path && (
-                                    <p className="text-[11px] opacity-50 mt-1 break-all">
-                                      {model.path}
-                                    </p>
-                                  )}
-                                </div>
-                                <div className="flex flex-row flex-wrap gap-2 items-center justify-end">
-                                  {model.installed ? (
-                                    <>
-                                      <button
-                                        className="btn btn-xs btn-outline text-[11px]"
-                                        disabled={
-                                          selectedModel === model.path ||
-                                          !model.path ||
-                                          modelOperations[model.id]
-                                        }
-                                        onClick={() =>
-                                          model.path &&
-                                          setSelectedModel(model.path)
-                                        }
-                                      >
-                                        {selectedModel === model.path
-                                          ? "In use"
-                                          : "Use"}
-                                      </button>
-                                      <button
-                                        className="btn btn-xs btn-error text-[11px]"
-                                        onClick={() => handleDeleteModel(model)}
-                                        disabled={modelOperations[model.id]}
-                                      >
-                                        {modelOperations[model.id]
-                                          ? "Deleting..."
-                                          : "Delete"}
-                                      </button>
-                                    </>
-                                  ) : (
-                                    <button
-                                      className="btn btn-xs btn-primary text-[11px]"
-                                      onClick={() => handleInstallModel(model.id)}
-                                      disabled={modelOperations[model.id]}
-                                    >
-                                      {modelOperations[model.id]
-                                        ? progress?.status === "downloading"
-                                          ? "Downloading..."
-                                          : "Installing..."
-                                        : "Install"}
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </details>
-
-              <details className="collapse collapse-arrow bg-base-200/50 border border-base-300">
-                <summary className="collapse-title text-sm font-semibold">
-                  Microphone Settings
-                </summary>
-                <div className="collapse-content">
-                  <div className="space-y-4">
-                    <div className="form-control">
-                      <label className="label">
-                        <span className="label-text">Input Device</span>
-                      </label>
-                      <select
-                        value={selectedAudioDevice}
-                        onChange={(e) =>
-                          handleAudioDeviceChange(e.target.value)
-                        }
-                        className="select select-bordered w-full"
-                      >
-                        {audioDevices.map((device) => (
-                          <option key={device.name} value={device.name}>
-                            {device.name}
-                            {device.is_default ? " (default)" : ""}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="form-control">
-                      <label className="label">
-                        <span className="label-text">Transcription Backend</span>
-                      </label>
-                      <select
-                        value={transcriptionMode}
-                        onChange={(e) =>
-                          void handleTranscriptionModeChange(
-                            e.target.value as BackendMode,
-                          )
-                        }
-                        className="select select-bordered w-full"
-                      >
-                        <option value="local">Local (offline Whisper)</option>
-                        <option value="openai">OpenAI API</option>
-                      </select>
-                      <label className="label">
-                        <span className="label-text-alt opacity-70">
-                          Local mode needs an installed Whisper model. OpenAI mode uses LLM_* env vars.
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-                </div>
-              </details>
-
-              <details className="collapse collapse-arrow bg-base-200/50 border border-base-300">
-                <summary className="collapse-title text-sm font-semibold">
-                  Summarization Settings
-                </summary>
-                <div className="collapse-content space-y-4">
-                  <div className="form-control">
-                    <label className="label cursor-pointer">
-                      <span className="label-text">Enable AI summarization</span>
-                      <input
-                        type="checkbox"
-                        className="toggle toggle-primary"
-                        checked={summaryConfig.enabled}
-                        onChange={(e) =>
-                          setSummaryConfig((prev) => ({
-                            ...prev,
-                            enabled: e.target.checked,
-                          }))
-                        }
-                      />
-                    </label>
-                  </div>
-
-                  <div className="form-control">
-                    <label className="label">
-                      <span className="label-text">API Base URL</span>
-                    </label>
-                    <input
-                      type="text"
-                      className="input input-bordered w-full"
-                      value={summaryConfig.apiBaseUrl}
-                      onChange={(e) =>
-                        setSummaryConfig((prev) => ({
-                          ...prev,
-                          apiBaseUrl: e.target.value,
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="form-control">
-                    <label className="label">
-                      <span className="label-text">Model</span>
-                    </label>
-                    <input
-                      type="text"
-                      className="input input-bordered w-full"
-                      value={summaryConfig.model}
-                      onChange={(e) =>
-                        setSummaryConfig((prev) => ({
-                          ...prev,
-                          model: e.target.value,
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="form-control">
-                    <label className="label">
-                      <span className="label-text">API Key Source</span>
-                      <span className="label-text-alt opacity-70">
-                        {summaryConfig.hasApiKey
-                          ? "Detected in environment"
-                          : "Missing in environment"}
-                      </span>
-                    </label>
-                    <div className="text-xs opacity-70 leading-relaxed">
-                      Summarization uses <code>LLM_SUMMARY_API_KEY</code> (or
-                      <code> LLM_API_KEY</code>) from your <code>.env</code>.
-                    </div>
-                  </div>
-
-                  <div className="form-control">
-                    <label className="label">
-                      <span className="label-text">Custom System Prompt (optional)</span>
-                    </label>
-                    <textarea
-                      className="textarea textarea-bordered w-full text-sm"
-                      rows={4}
-                      placeholder="You summarize spoken conversations. Return concise markdown with sections: Summary, Key Points, Action Items. Keep factual and avoid fabrication."
-                      value={summaryConfig.customSystemPrompt || ""}
-                      onChange={(e) =>
-                        setSummaryConfig((prev) => ({
-                          ...prev,
-                          customSystemPrompt: e.target.value || undefined,
-                        }))
-                      }
-                    />
-                    <label className="label">
-                      <span className="label-text-alt opacity-70">Leave empty to use the default prompt.</span>
-                    </label>
-                  </div>
-
-                  <div className="form-control">
-                    <label className="label">
-                      <span className="label-text">Summary Save Location</span>
-                    </label>
-                    <input
-                      type="text"
-                      className="input input-bordered w-full"
-                      placeholder="/path/to/summaries"
-                      value={summaryConfig.summarySavePath || ""}
-                      onChange={(e) =>
-                        setSummaryConfig((prev) => ({
-                          ...prev,
-                          summarySavePath: e.target.value || undefined,
-                        }))
-                      }
-                    />
-                    <label className="label">
-                      <span className="label-text-alt opacity-70">
-                        Directory where summary files will be saved as timestamped markdown.
-                      </span>
-                    </label>
-                  </div>
-
-                  <div className="form-control">
-                    <label className="label cursor-pointer">
-                      <span className="label-text">Auto-save summaries to file</span>
-                      <input
-                        type="checkbox"
-                        className="toggle toggle-primary"
-                        checked={summaryConfig.autoSaveSummary}
-                        onChange={(e) =>
-                          setSummaryConfig((prev) => ({
-                            ...prev,
-                            autoSaveSummary: e.target.checked,
-                          }))
-                        }
-                      />
-                    </label>
-                    <label className="label">
-                      <span className="label-text-alt opacity-70">
-                        When enabled, summaries are automatically saved when the Summarize button is pressed.
-                      </span>
-                    </label>
-                  </div>
-
-                  <div className="flex justify-end">
-                    <button
-                      className={`btn btn-sm ${
-                        isSavingSummaryConfig ? "btn-disabled" : "btn-primary"
-                      }`}
-                      onClick={saveSummarizationConfig}
-                      disabled={isSavingSummaryConfig}
-                    >
-                      {isSavingSummaryConfig ? "Saving..." : "Save"}
-                    </button>
-                  </div>
-                </div>
-              </details>
-
-              <details className="collapse collapse-arrow bg-base-200/50 border border-base-300">
-                <summary className="collapse-title text-sm font-semibold">
-                  Save Transcript Settings
-                </summary>
-                <div className="collapse-content space-y-4">
-                  <div className="form-control">
-                    <label className="label cursor-pointer">
-                      <span className="label-text">Save transcript</span>
-                      <input
-                        type="checkbox"
-                        className="toggle toggle-primary"
-                        checked={recordingSaveEnabled}
-                        onChange={(e) =>
-                          saveRecordingSaveConfig(
-                            e.target.checked,
-                            recordingSavePath,
-                          )
-                        }
-                      />
-                    </label>
-                  </div>
-                  {recordingSaveEnabled && (
-                    <div className="form-control">
-                      <label className="label">
-                        <span className="label-text">Destination Folder</span>
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="/path/to/save/folder"
-                        value={recordingSavePath}
-                        onChange={(e) => setRecordingSavePath(e.target.value)}
-                        onBlur={() =>
-                          saveRecordingSaveConfig(
-                            recordingSaveEnabled,
-                            recordingSavePath,
-                          )
-                        }
-                        className="input input-bordered w-full"
-                      />
-                      <label className="label">
-                        <span className="label-text-alt opacity-70">
-                          Saves session transcript text into the selected folder.
-                        </span>
-                      </label>
-                    </div>
-                  )}
-                </div>
-              </details>
-
-              <details className="collapse collapse-arrow bg-base-200/50 border border-base-300">
-                <summary className="collapse-title text-sm font-semibold">
-                  Whisper Model Settings
-                </summary>
-                <div className="collapse-content space-y-4">
-                  <div className="flex items-center justify-between">
-                    <span className="label-text font-semibold">
-                      Whisper Model Settings
-                    </span>
-                    <button
-                      className={`btn btn-xs ${
-                        isSavingWhisperParams ? "btn-disabled" : "btn-primary"
-                      }`}
-                      onClick={() => saveWhisperParams(whisperParams)}
-                      disabled={isSavingWhisperParams}
-                    >
-                      {isSavingWhisperParams ? "Saving..." : "Save"}
-                    </button>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="label">
-                      <span className="label-text">
-                        Context Length (audio_ctx: {whisperParams.audioCtx})
-                      </span>
-                    </label>
-                    <p className="text-xs opacity-60">
-                      Larger values reference more past audio but increase compute and memory usage.
-                    </p>
-                    <input
-                      type="range"
-                      min="50"
-                      max="1500"
-                      step="50"
-                      value={whisperParams.audioCtx}
-                      onChange={(e) =>
-                        setWhisperParams((prev) => ({
-                          ...prev,
-                          audioCtx:
-                            parseInt(e.target.value, 10) || prev.audioCtx,
-                        }))
-                      }
-                      className="range range-sm range-primary"
-                    />
-                    <input
-                      type="number"
-                      min="50"
-                      max="1500"
-                      step="50"
-                      value={whisperParams.audioCtx}
-                      onChange={(e) =>
-                        setWhisperParams((prev) => ({
-                          ...prev,
-                          audioCtx:
-                            parseInt(e.target.value, 10) || prev.audioCtx,
-                        }))
-                      }
-                      className="input input-bordered input-sm w-32"
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="label">
-                      <span className="label-text">
-                        Temperature (temperature:{" "}
-                        {whisperParams.temperature.toFixed(2)})
-                      </span>
-                    </label>
-                    <p className="text-xs opacity-60">
-                      Higher values increase output diversity. Values close to 0 are more stable.
-                    </p>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      value={whisperParams.temperature}
-                      onChange={(e) =>
-                        setWhisperParams((prev) => ({
-                          ...prev,
-                          temperature:
-                            parseFloat(e.target.value) ?? prev.temperature,
-                        }))
-                      }
-                      className="range range-sm range-primary"
-                    />
-                    <input
-                      type="number"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      value={whisperParams.temperature}
-                      onChange={(e) =>
-                        setWhisperParams((prev) => ({
-                          ...prev,
-                          temperature:
-                            parseFloat(e.target.value) ?? prev.temperature,
-                        }))
-                      }
-                      className="input input-bordered input-sm w-32"
-                    />
-                  </div>
-                </div>
-              </details>
-
-              <details className="collapse collapse-arrow bg-base-200/50 border border-base-300">
-                <summary className="collapse-title text-sm font-semibold">
-                  Streaming Settings
-                </summary>
-                <div className="collapse-content space-y-4">
-                  <div className="flex items-center justify-between">
-                    <span className="label-text font-semibold">
-                      Streaming Settings
-                    </span>
-                    <button
-                      className={`btn btn-xs ${
-                        isSavingStreamingConfig ? "btn-disabled" : "btn-primary"
-                      }`}
-                      onClick={() => saveStreamingConfig(streamingConfig)}
-                      disabled={isSavingStreamingConfig}
-                    >
-                      {isSavingStreamingConfig ? "Saving..." : "Save"}
-                    </button>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="label">
-                      <span className="label-text">
-                        VAD Threshold ({streamingConfig.vadThreshold.toFixed(3)})
-                      </span>
-                    </label>
-                    <p className="text-xs opacity-60">
-                      Lower values detect quieter speech more easily; higher values require louder sound.
-                    </p>
-                    <input
-                      type="range"
-                      min="0.01"
-                      max="0.99"
-                      step="0.01"
-                      value={streamingConfig.vadThreshold}
-                      onChange={(e) =>
-                        setStreamingConfig((prev) => ({
-                          ...prev,
-                          vadThreshold: parseFloat(e.target.value),
-                        }))
-                      }
-                      className="range range-sm range-primary"
-                    />
-                    <input
-                      type="number"
-                      min="0.01"
-                      max="0.99"
-                      step="0.01"
-                      value={streamingConfig.vadThreshold}
-                      onChange={(e) =>
-                        setStreamingConfig((prev) => ({
-                          ...prev,
-                          vadThreshold: parseFloat(e.target.value) || 0.1,
-                        }))
-                      }
-                      className="input input-bordered input-sm w-32"
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="label">
-                      <span className="label-text">Transcription Interval (sec)</span>
-                    </label>
-                    <p className="text-xs opacity-60">
-                      Shorter intervals update more frequently; longer intervals return larger chunks.
-                    </p>
-                    <input
-                      type="range"
-                      min="0.5"
-                      max="30"
-                      step="0.5"
-                      value={streamingConfig.partialIntervalSeconds}
-                      onChange={(e) =>
-                        setStreamingConfig((prev) => ({
-                          ...prev,
-                          partialIntervalSeconds: parseFloat(e.target.value),
-                        }))
-                      }
-                      className="range range-sm range-primary"
-                    />
-                    <input
-                      type="number"
-                      min="0.5"
-                      max="30"
-                      step="0.5"
-                      value={streamingConfig.partialIntervalSeconds}
-                      onChange={(e) =>
-                        setStreamingConfig((prev) => ({
-                          ...prev,
-                          partialIntervalSeconds:
-                            parseFloat(e.target.value) || 4,
-                        }))
-                      }
-                      className="input input-bordered input-sm w-32"
-                    />
-                  </div>
-                </div>
-              </details>
-
-              {hasMicPermission === false && (
-                <div className="alert alert-warning">
-                  <span className="text-xs">⚠️ Microphone permission is required</span>
-                </div>
-              )}
-
-              {!isInitialized && selectedModel && (
-                <div className="alert alert-info">
-                  <span className="text-xs">Initializing...</span>
-                </div>
-              )}
-            </div>
-
-            <div className="modal-action">
-              <button className="btn" onClick={() => setShowSettings(false)}>
-                Close
-              </button>
-            </div>
-          </div>
-          <form method="dialog" className="modal-backdrop">
-            <button onClick={() => setShowSettings(false)}>close</button>
-          </form>
-        </dialog>
+        <SettingsModal
+          theme={theme}
+          setTheme={setTheme}
+          selectedModel={selectedModel}
+          setSelectedModel={setSelectedModel}
+          availableModels={availableModels}
+          selectedModelDisplayName={selectedModelDisplayName}
+          remoteModels={remoteModels}
+          modelOperations={modelOperations}
+          modelInstallProgress={modelInstallProgress}
+          isLoadingRemoteModels={isLoadingRemoteModels}
+          refreshAllModels={refreshAllModels}
+          handleInstallModel={handleInstallModel}
+          handleDeleteModel={handleDeleteModel}
+          selectedAudioDevice={selectedAudioDevice}
+          audioDevices={audioDevices}
+          handleAudioDeviceChange={handleAudioDeviceChange}
+          transcriptionMode={transcriptionMode}
+          handleTranscriptionModeChange={handleTranscriptionModeChange}
+          transcriptionModel={transcriptionModel}
+          setTranscriptionModel={setTranscriptionModel}
+          saveTranscriptionModelConfig={saveTranscriptionModelConfig}
+          apiKeyStatus={apiKeyStatus}
+          saveApiKey={saveApiKey}
+          deleteApiKey={deleteApiKey}
+          testApiKey={testApiKey}
+          summaryConfig={summaryConfig}
+          setSummaryConfig={setSummaryConfig}
+          isSavingSummaryConfig={isSavingSummaryConfig}
+          saveSummarizationConfig={saveSummarizationConfig}
+          recordingSaveEnabled={recordingSaveEnabled}
+          recordingSavePath={recordingSavePath}
+          setRecordingSavePath={setRecordingSavePath}
+          saveRecordingSaveConfig={saveRecordingSaveConfig}
+          whisperParams={whisperParams}
+          setWhisperParams={setWhisperParams}
+          isSavingWhisperParams={isSavingWhisperParams}
+          saveWhisperParams={saveWhisperParams}
+          streamingConfig={streamingConfig}
+          setStreamingConfig={setStreamingConfig}
+          isSavingStreamingConfig={isSavingStreamingConfig}
+          saveStreamingConfig={saveStreamingConfig}
+          hasMicPermission={hasMicPermission}
+          isInitialized={isInitialized}
+          onClose={() => setShowSettings(false)}
+        />
       )}
     </div>
   );

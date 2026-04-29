@@ -1,8 +1,4 @@
-use std::path::PathBuf;
-
-use chrono::Local;
-use hound::{SampleFormat, WavSpec, WavWriter};
-use log::{debug, error, info};
+use log::{error, info};
 
 use super::constants::{
     VAD_CHUNK_SIZE, VAD_POST_BUFFER_SAMPLES, VAD_PRE_BUFFER_SAMPLES, VAD_SAMPLE_RATE,
@@ -203,68 +199,4 @@ pub fn push_sample_with_optional_vad(
         }
         state.last_partial_emit_samples = state.session_samples;
     }
-}
-
-pub fn save_audio_session_to_wav(
-    audio_data: &[f32],
-    session_id: u64,
-    recording_dir: &str,
-    source: &str,
-) -> Result<(), String> {
-    let start_time = std::time::Instant::now();
-    let now = Local::now();
-    let timestamp = now.format("%H%M%S");
-    let filename = format!("{}_audio_session_{}_{}.wav", source, session_id, timestamp);
-
-    let mut path = PathBuf::from(recording_dir);
-
-    info!(
-        "Saving {} audio to recording directory: {}",
-        source,
-        path.display()
-    );
-
-    if !path.exists() {
-        debug!("Creating directory: {}", path.display());
-        std::fs::create_dir_all(&path).map_err(|e| format!("Failed to create directory: {}", e))?;
-    }
-
-    path.push(filename);
-
-    let spec = WavSpec {
-        channels: 1,
-        sample_rate: VAD_SAMPLE_RATE,
-        bits_per_sample: 16,
-        sample_format: SampleFormat::Int,
-    };
-
-    debug!("Creating WAV file: {}", path.display());
-
-    let mut writer =
-        WavWriter::create(&path, spec).map_err(|e| format!("Failed to create WAV file: {}", e))?;
-
-    for &sample in audio_data {
-        let sample_i16 = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-        writer
-            .write_sample(sample_i16)
-            .map_err(|e| format!("Failed to write sample: {}", e))?;
-    }
-
-    writer
-        .finalize()
-        .map_err(|e| format!("Failed to finalize WAV file: {}", e))?;
-
-    let elapsed = start_time.elapsed();
-    let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-
-    info!(
-        "Successfully saved {} audio session #{} to: {} ({} bytes, took {:.2}ms)",
-        source,
-        session_id,
-        path.display(),
-        file_size,
-        elapsed.as_secs_f64() * 1000.0
-    );
-
-    Ok(())
 }

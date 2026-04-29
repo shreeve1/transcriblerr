@@ -6,11 +6,52 @@ use tauri::AppHandle;
 
 use crate::audio::state::{try_recording_state, RecordingState};
 use crate::emit_backend_error;
+use crate::emit_backend_error_with_kind;
 use crate::emit_transcription_segment;
 use crate::whisper::WHISPER_CTX;
 
 use super::llm_client;
 use super::{TranscriptionCommand, TranscriptionSource};
+
+#[derive(Debug, Clone)]
+pub enum TranscriptionError {
+    LlmAuth(String),
+    Other(String),
+}
+
+impl TranscriptionError {
+    fn is_llm_auth(&self) -> bool {
+        matches!(self, TranscriptionError::LlmAuth(_))
+    }
+}
+
+impl std::fmt::Display for TranscriptionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TranscriptionError::LlmAuth(message) | TranscriptionError::Other(message) => {
+                f.write_str(message)
+            }
+        }
+    }
+}
+
+fn emit_transcription_error(
+    app_handle: &AppHandle,
+    source: TranscriptionSource,
+    err: &TranscriptionError,
+) {
+    let message = format!(
+        "Transcription request failed ({}): {}",
+        source.event_source(),
+        err
+    );
+
+    if err.is_llm_auth() {
+        emit_backend_error_with_kind(app_handle, "llm_auth", message);
+    } else {
+        emit_backend_error(app_handle, message);
+    }
+}
 
 pub fn spawn_transcription_worker(
     app_handle: AppHandle,
@@ -32,8 +73,14 @@ pub fn spawn_transcription_worker(
                     is_final,
                     speaker_id,
                 } => {
-                    let mut all_commands =
-                        vec![(audio, language, source, session_id_counter, is_final, speaker_id)];
+                    let mut all_commands = vec![(
+                        audio,
+                        language,
+                        source,
+                        session_id_counter,
+                        is_final,
+                        speaker_id,
+                    )];
                     while let Ok(next_command) = rx.try_recv() {
                         match next_command {
                             TranscriptionCommand::Run {
@@ -57,11 +104,25 @@ pub fn spawn_transcription_worker(
                     let mut final_requests = Vec::new();
                     let mut sessions_with_final = HashSet::new();
 
-                    for (audio, language, source, session_id_counter, is_final, speaker_id) in all_commands {
+                    for (
+                        audio,
+                        language,
+                        source,
+                        session_id_counter,
+                        is_final,
+                        speaker_id,
+                    ) in all_commands
+                    {
                         let key = (source, session_id_counter);
                         if is_final {
                             sessions_with_final.insert(key);
-                            final_requests.push((audio, language, source, session_id_counter, speaker_id));
+                            final_requests.push((
+                                audio,
+                                language,
+                                source,
+                                session_id_counter,
+                                speaker_id,
+                            ));
                         } else {
                             latest_requests.insert(key, (audio, language, is_final, speaker_id));
                         }
@@ -78,14 +139,7 @@ pub fn spawn_transcription_worker(
                             Some(session_id_counter),
                         ) {
                             error!("Transcription worker error: {}", err);
-                            emit_backend_error(
-                                &app_handle,
-                                format!(
-                                    "Transcription request failed ({}): {}",
-                                    source.event_source(),
-                                    err
-                                ),
-                            );
+                            emit_transcription_error(&app_handle, source, &err);
                         }
                     }
 
@@ -104,14 +158,7 @@ pub fn spawn_transcription_worker(
                             Some(session_id_counter),
                         ) {
                             error!("Transcription worker error: {}", err);
-                            emit_backend_error(
-                                &app_handle,
-                                format!(
-                                    "Transcription request failed ({}): {}",
-                                    source.event_source(),
-                                    err
-                                ),
-                            );
+                            emit_transcription_error(&app_handle, source, &err);
                         }
                     }
 
@@ -141,6 +188,16 @@ pub fn spawn_transcription_worker(
     (tx, handle)
 }
 
+pub fn ensure_transcription_worker(state: &mut RecordingState, app_handle: AppHandle) {
+    if state.transcription_tx.is_some() {
+        return;
+    }
+
+    let (tx, handle) = spawn_transcription_worker(app_handle);
+    state.transcription_tx = Some(tx);
+    state.transcription_handle = Some(handle);
+}
+
 pub fn transcribe_and_emit_common(
     audio_data: &[f32],
     language: &str,
@@ -152,7 +209,7 @@ pub fn transcribe_and_emit_common(
     transcribed_samples: usize,
     transcription_mode: &str,
     speaker_id: Option<String>,
-) -> Result<(usize, u64), String> {
+) -> Result<(usize, u64), TranscriptionError> {
     let mut next_message_id = message_id_counter;
 
     if transcribed_samples >= audio_data.len() {
@@ -165,20 +222,31 @@ pub fn transcribe_and_emit_common(
         let ctx_lock = WHISPER_CTX
             .get()
             .ok_or_else(|| {
-                "Whisper not initialized. Install/select a local model first.".to_string()
+                TranscriptionError::Other(
+                    "Whisper not initialized. Install/select a local model first.".to_string(),
+                )
             })?
             .clone();
         let ctx_guard = ctx_lock
             .lock()
-            .map_err(|_| "Failed to lock Whisper context".to_string())?;
+            .map_err(|_| TranscriptionError::Other("Failed to lock Whisper context".to_string()))?;
         let ctx = ctx_guard
             .as_ref()
-            .ok_or_else(|| "Whisper context not available".to_string())?;
+            .ok_or_else(|| TranscriptionError::Other("Whisper context not available".to_string()))?;
 
         ctx.transcribe_with_language(audio_to_transcribe, language)
-            .map_err(|e| format!("Local transcription failed: {}", e))?
+            .map_err(|e| TranscriptionError::Other(format!("Local transcription failed: {}", e)))?
     } else {
-        llm_client::transcribe_audio_chunk(audio_to_transcribe, Some(language))?
+        llm_client::transcribe_audio_chunk(audio_to_transcribe, Some(language)).map_err(|err| {
+            match err {
+                llm_client::LlmTranscriptionError::Auth(message) => {
+                    TranscriptionError::LlmAuth(message)
+                }
+                llm_client::LlmTranscriptionError::Other(message) => {
+                    TranscriptionError::Other(message)
+                }
+            }
+        })?
     };
 
     if text.trim().is_empty() {
@@ -194,7 +262,8 @@ pub fn transcribe_and_emit_common(
         is_final,
         source.to_string(),
         speaker_id.clone(),
-    )?;
+    )
+    .map_err(TranscriptionError::Other)?;
 
     next_message_id = next_message_id.wrapping_add(1);
     Ok((audio_data.len(), next_message_id))
@@ -208,11 +277,12 @@ fn transcribe_and_emit(
     app_handle: &AppHandle,
     speaker_id: Option<String>,
     command_session_id: Option<u64>,
-) -> Result<(), String> {
+) -> Result<(), TranscriptionError> {
     let state =
-        try_recording_state().ok_or_else(|| "Recording state not initialized".to_string())?;
+        try_recording_state()
+            .ok_or_else(|| TranscriptionError::Other("Recording state not initialized".to_string()))?;
 
-    let (lang, source_state, transcription_mode) = {
+    let (lang, source_state, transcription_mode, llm_auth_blocked) = {
         let state_guard = state.lock();
         let lang = language
             .clone()
@@ -220,7 +290,8 @@ fn transcribe_and_emit(
             .unwrap_or_else(|| "en".to_string());
         let source_state = state_guard.transcription_state(source).clone();
         let transcription_mode = state_guard.transcription_mode.clone();
-        (lang, source_state, transcription_mode)
+        let llm_auth_blocked = state_guard.llm_auth_blocked;
+        (lang, source_state, transcription_mode, llm_auth_blocked)
     };
 
     // Use the session_id from the command if provided (captures the value at
@@ -229,21 +300,29 @@ fn transcribe_and_emit(
     // before the worker processes the queued command.
     let emit_session_id = command_session_id.unwrap_or(source_state.session_id_counter);
 
-    let result = transcribe_and_emit_common(
-        audio_data,
-        &lang,
-        emit_session_id,
-        is_final,
-        app_handle,
-        source.event_source(),
-        source_state.message_id_counter,
-        source_state.transcribed_samples,
-        &transcription_mode,
-        speaker_id,
-    );
+    let result = if transcription_mode != "local" && llm_auth_blocked {
+        Ok((audio_data.len(), source_state.message_id_counter))
+    } else {
+        transcribe_and_emit_common(
+            audio_data,
+            &lang,
+            emit_session_id,
+            is_final,
+            app_handle,
+            source.event_source(),
+            source_state.message_id_counter,
+            source_state.transcribed_samples,
+            &transcription_mode,
+            speaker_id,
+        )
+    };
 
     {
         let mut state_guard = state.lock();
+        if matches!(result, Err(ref err) if err.is_llm_auth()) && !state_guard.llm_auth_blocked {
+            state_guard.llm_auth_blocked = true;
+        }
+
         let source_state_mut = state_guard.transcription_state_mut(source);
 
         match result {
@@ -341,10 +420,4 @@ pub fn stop_transcription_worker_parts(
     if let Some(handle) = handle {
         let _ = handle.join();
     }
-}
-
-pub fn stop_transcription_worker(state: &mut RecordingState) {
-    let tx = state.transcription_tx.take();
-    let handle = state.transcription_handle.take();
-    stop_transcription_worker_parts(tx, handle);
 }

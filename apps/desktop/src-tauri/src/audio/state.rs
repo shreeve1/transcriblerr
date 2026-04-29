@@ -31,11 +31,26 @@ pub struct SourceTranscriptionState {
     pub message_id_counter: u64,
 }
 
-#[derive(Debug)]
+pub struct MicStream {
+    _stream: cpal::Stream,
+}
+
+impl MicStream {
+    pub fn new(stream: cpal::Stream) -> Self {
+        Self { _stream: stream }
+    }
+}
+
+// Transcriblerr targets macOS/CoreAudio. CPAL's cross-platform Stream wrapper is
+// intentionally !Send because some backends are not thread-safe, but this app
+// only moves the stream into shared state so commands can drop it deterministically.
+unsafe impl Send for MicStream {}
+
 pub struct RecordingState {
     pub is_recording: bool,
     pub is_muted: bool,
     pub mic_stream_id: u64,
+    pub mic_stream: Option<MicStream>,
     pub audio_buffer: Vec<f32>,
     pub session_audio: Vec<f32>,
     pub sample_rate: u32,
@@ -51,9 +66,9 @@ pub struct RecordingState {
     pub partial_transcript_interval_samples: usize,
     pub system_audio_enabled: bool,
     pub transcription_mode: String,
+    pub llm_transcription_model: String,
+    pub llm_auth_blocked: bool,
     pub recording_save_enabled: bool,
-    pub screen_recording_enabled: bool,
-    pub screen_recording_active: bool,
     pub suppress_transcription: bool,
     pub current_recording_dir: Option<String>,
     pub last_vad_event_time: Instant,
@@ -68,6 +83,7 @@ pub fn default_recording_state() -> RecordingState {
         is_recording: false,
         is_muted: true,
         mic_stream_id: 0,
+        mic_stream: None,
         audio_buffer: Vec::new(),
         session_audio: Vec::new(),
         sample_rate: VAD_SAMPLE_RATE,
@@ -83,9 +99,9 @@ pub fn default_recording_state() -> RecordingState {
         partial_transcript_interval_samples: DEFAULT_PARTIAL_TRANSCRIPT_INTERVAL_SAMPLES,
         system_audio_enabled: false,
         transcription_mode: "local".to_string(),
+        llm_transcription_model: crate::transcription::llm_client::default_transcription_model(),
+        llm_auth_blocked: false,
         recording_save_enabled: false,
-        screen_recording_enabled: false,
-        screen_recording_active: false,
         suppress_transcription: false,
         current_recording_dir: None,
         last_vad_event_time: Instant::now(),

@@ -52,19 +52,6 @@ Do not combine multiple actions into one item.
 
 TRANSCRIPT:"#;
 
-fn env_api_key() -> Option<String> {
-    std::env::var("LLM_SUMMARY_API_KEY")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .or_else(|| {
-            std::env::var("LLM_API_KEY")
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-        })
-}
-
 fn parse_content(value: &Value) -> Option<String> {
     value
         .get("choices")
@@ -108,9 +95,19 @@ fn classify_http_error(status: u16, detail: &str) -> SummarizationErrorKind {
 }
 
 pub fn summarize(config: &SummarizationConfig, transcript: &str, language: &str) -> Result<String, (SummarizationErrorKind, String)> {
-    let api_key = env_api_key()
+    let api_key = crate::api_keys::get_summary_api_key()
+        .map_err(|err| (SummarizationErrorKind::InvalidConfig, err))?
         .ok_or((SummarizationErrorKind::Unconfigured, "Missing API key".to_string()))?;
 
+    summarize_with_api_key(config, transcript, language, &api_key)
+}
+
+fn summarize_with_api_key(
+    config: &SummarizationConfig,
+    transcript: &str,
+    language: &str,
+    api_key: &str,
+) -> Result<String, (SummarizationErrorKind, String)> {
     let client = Client::builder()
         .timeout(Duration::from_secs(config.timeout_secs.max(5)))
         .build()
@@ -137,7 +134,7 @@ pub fn summarize(config: &SummarizationConfig, transcript: &str, language: &str)
 
     let response = client
         .post(url)
-        .bearer_auth(&api_key)
+        .bearer_auth(api_key)
         .json(&payload)
         .send()
         .map_err(|e| (SummarizationErrorKind::Transient, format!("Request failed: {e}")))?;
@@ -164,8 +161,17 @@ pub fn summarize(config: &SummarizationConfig, transcript: &str, language: &str)
 }
 
 pub fn smoke_check(config: &SummarizationConfig) -> Result<(), (SummarizationErrorKind, String)> {
-    let api_key = env_api_key()
+    let api_key = crate::api_keys::get_summary_api_key()
+        .map_err(|err| (SummarizationErrorKind::InvalidConfig, err))?
         .ok_or((SummarizationErrorKind::Unconfigured, "Missing API key".to_string()))?;
+
+    smoke_check_with_api_key(config, api_key)
+}
+
+pub fn smoke_check_with_api_key(
+    config: &SummarizationConfig,
+    api_key: String,
+) -> Result<(), (SummarizationErrorKind, String)> {
 
     let client = Client::builder()
         .timeout(Duration::from_secs(config.timeout_secs.max(5)))
@@ -182,6 +188,6 @@ pub fn smoke_check(config: &SummarizationConfig) -> Result<(), (SummarizationErr
         return Err((SummarizationErrorKind::Provider, format!("GET /models returned {}", models_res.status().as_u16())));
     }
 
-    let _ = summarize(config, "Speaker A: hello\nSpeaker B: hi", "en")?;
+    let _ = summarize_with_api_key(config, "Speaker A: hello\nSpeaker B: hi", "en", &api_key)?;
     Ok(())
 }

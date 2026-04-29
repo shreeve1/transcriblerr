@@ -1,36 +1,29 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use log::{error, info};
+use log::{debug, error, info};
 use tauri::AppHandle;
 use voice_activity_detector::VoiceActivityDetector;
 
 use crate::audio::constants::{VAD_CHUNK_SIZE, VAD_SAMPLE_RATE};
 use crate::audio::processing::finalize_active_session;
-use crate::audio::state::{recording_state, SileroVadState};
+use crate::audio::state::{recording_state, MicStream, SileroVadState};
 use crate::audio::utils::resample_audio;
-use crate::transcription::spawn_transcription_worker;
-use crate::transcription::worker::stop_transcription_worker_parts;
+use crate::emit_backend_error_with_kind;
+use crate::transcription::worker::ensure_transcription_worker;
 
 pub async fn start_mic_stream(app_handle: AppHandle, language: Option<String>) -> Result<(), String> {
     let state = recording_state();
 
-    // Avoid joining the worker thread while holding the recording-state mutex.
-    // The worker can lock the same state while shutting down.
-    let (existing_tx, existing_handle) = {
+    {
         let mut state_guard = state.lock();
-        (
-            state_guard.transcription_tx.take(),
-            state_guard.transcription_handle.take(),
-        )
-    };
-    stop_transcription_worker_parts(existing_tx, existing_handle);
+        state_guard.mic_stream.take();
+    }
 
     let (selected_device_name, current_mic_stream_id, configured_vad_threshold) = {
         let mut state_guard = state.lock();
 
-        let (tx, handle) = spawn_transcription_worker(app_handle.clone());
-        state_guard.transcription_tx = Some(tx);
-        state_guard.transcription_handle = Some(handle);
+        ensure_transcription_worker(&mut state_guard, app_handle.clone());
         state_guard.language = language.clone();
+        state_guard.is_muted = true;
 
         state_guard.mic_stream_id = state_guard.mic_stream_id.wrapping_add(1);
         let current_mic_stream_id = state_guard.mic_stream_id;
@@ -133,8 +126,10 @@ pub async fn start_mic_stream(app_handle: AppHandle, language: Option<String>) -
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => {
             let state_clone = state.clone();
+            let error_state = state.clone();
 
             let app_handle_clone = app_handle.clone();
+            let error_app_handle = app_handle.clone();
             device.build_input_stream(
                 &config.into(),
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
@@ -160,14 +155,46 @@ pub async fn start_mic_stream(app_handle: AppHandle, language: Option<String>) -
                         }
                     }
                 },
-                |err| error!("Error in audio stream: {}", err),
+                move |err| {
+                    let should_emit = {
+                        let mut state = error_state.lock();
+                        if state.is_muted || state.mic_stream_id != current_mic_stream_id {
+                            debug!(
+                                "Ignoring stale mic stream #{} error: {}",
+                                current_mic_stream_id, err
+                            );
+                            false
+                        } else {
+                            error!(
+                                "Error in active mic stream #{}: {}",
+                                current_mic_stream_id, err
+                            );
+                            finalize_active_session(&mut state, "mic_device_unavailable");
+                            state.is_muted = true;
+                            state.vad_state = None;
+                            true
+                        }
+                    };
+
+                    if should_emit {
+                        emit_backend_error_with_kind(
+                            &error_app_handle,
+                            "mic_device_unavailable",
+                            "Microphone device is no longer available. Reconnect it or select another input device.",
+                        );
+                    }
+                },
                 None,
             )
         },
         _ => {
+            let mut state_guard = state.lock();
+            state_guard.vad_state = None;
             return Err("Unsupported sample format".to_string());
         }
     }.map_err(|e| {
+        let mut state_guard = state.lock();
+        state_guard.vad_state = None;
         info!(
             "Failed to build audio stream: {}",
             e
@@ -178,6 +205,8 @@ pub async fn start_mic_stream(app_handle: AppHandle, language: Option<String>) -
     info!("Starting audio stream…");
 
     stream.play().map_err(|e| {
+        let mut state_guard = state.lock();
+        state_guard.vad_state = None;
         info!("Failed to start audio stream: {}", e);
         format!("Failed to start stream: {}", e)
     })?;
@@ -188,9 +217,9 @@ pub async fn start_mic_stream(app_handle: AppHandle, language: Option<String>) -
         let mut state_guard = state.lock();
         state_guard.audio_buffer.clear();
         state_guard.sample_rate = VAD_SAMPLE_RATE;
+        state_guard.is_muted = false;
+        state_guard.mic_stream = Some(MicStream::new(stream));
     }
-
-    std::mem::forget(stream);
 
     info!("Mic stream started successfully",);
 

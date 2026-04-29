@@ -99,6 +99,26 @@ async fn set_transcription_backend_config(config: TranscriptionBackendConfig) ->
 }
 
 #[tauri::command]
+async fn get_api_key_status() -> Result<ApiKeyStatus, String> {
+    crate::get_api_key_status_impl().await
+}
+
+#[tauri::command]
+async fn set_api_key(api_key: String) -> Result<ApiKeyStatus, String> {
+    crate::set_api_key_impl(api_key).await
+}
+
+#[tauri::command]
+async fn delete_api_key() -> Result<ApiKeyStatus, String> {
+    crate::delete_api_key_impl().await
+}
+
+#[tauri::command]
+async fn test_api_key(api_key: Option<String>) -> Result<String, String> {
+    crate::test_api_key_impl(api_key).await
+}
+
+#[tauri::command]
 async fn check_microphone_permission() -> Result<bool, String> {
     crate::check_microphone_permission_impl().await
 }
@@ -126,31 +146,6 @@ async fn set_recording_save_config(enabled: bool, path: Option<String>) -> Resul
 #[tauri::command]
 async fn get_recording_save_config() -> Result<(bool, Option<String>), String> {
     crate::get_recording_save_config_impl().await
-}
-
-#[tauri::command]
-async fn set_screen_recording_config(enabled: bool) -> Result<(), String> {
-    crate::set_screen_recording_config_impl(enabled).await
-}
-
-#[tauri::command]
-async fn get_screen_recording_config() -> Result<bool, String> {
-    crate::get_screen_recording_config_impl().await
-}
-
-#[tauri::command]
-async fn start_screen_recording() -> Result<(), String> {
-    crate::start_screen_recording_impl().await
-}
-
-#[tauri::command]
-async fn stop_screen_recording() -> Result<(), String> {
-    crate::stop_screen_recording_impl().await
-}
-
-#[tauri::command]
-async fn get_screen_recording_status() -> Result<bool, String> {
-    crate::get_screen_recording_status_impl().await
 }
 
 #[tauri::command]
@@ -280,6 +275,10 @@ pub fn register<R: Runtime>(builder: Builder<R>) -> Builder<R> {
         set_streaming_config,
         get_transcription_backend_config,
         set_transcription_backend_config,
+        get_api_key_status,
+        set_api_key,
+        delete_api_key,
+        test_api_key,
         check_microphone_permission,
         start_system_audio,
         stop_system_audio,

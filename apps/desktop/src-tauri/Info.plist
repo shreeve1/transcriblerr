@@ -5,8 +5,10 @@
   <key>NSMicrophoneUsageDescription</key>
   <string>This app needs microphone access to transcribe audio.</string>
 
-  <!-- Screen/system audio capture (enable when needed) -->
-  <!-- <key>NSCameraUsageDescription</key>
-  <string>This app needs screen recording access to capture system audio.</string> -->
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>This app needs screen recording access to capture system audio.</string>
+
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>This app needs system audio capture access to transcribe computer audio.</string>
 </dict>
 </plist>

@@ -100,10 +100,6 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-fn env_api_key() -> Option<String> {
-    env_string("LLM_SUMMARY_API_KEY").or_else(|| env_string("LLM_API_KEY"))
-}
-
 fn default_config() -> SummarizationConfig {
     SummarizationConfig {
         enabled: env_bool("LLM_SUMMARY_ENABLED", true),
@@ -170,7 +166,7 @@ pub fn get_config_view() -> Result<SummarizationConfigView, String> {
         enabled: guard.enabled,
         api_base_url: guard.api_base_url.clone(),
         model: guard.model.clone(),
-        has_api_key: env_api_key().is_some(),
+        has_api_key: crate::api_keys::get_summary_api_key()?.is_some(),
         custom_system_prompt: guard.custom_system_prompt.clone(),
         summary_save_path: guard.summary_save_path.clone(),
         auto_save_summary: guard.auto_save_summary,
@@ -219,7 +215,7 @@ pub fn set_config(app_handle: &AppHandle, update: SummarizationConfigUpdate) -> 
         enabled: guard.enabled,
         api_base_url: guard.api_base_url.clone(),
         model: guard.model.clone(),
-        has_api_key: env_api_key().is_some(),
+        has_api_key: crate::api_keys::get_summary_api_key()?.is_some(),
         custom_system_prompt: guard.custom_system_prompt.clone(),
         summary_save_path: guard.summary_save_path.clone(),
         auto_save_summary: guard.auto_save_summary,
@@ -367,4 +363,21 @@ pub async fn provider_smoke_check() -> Result<String, String> {
         })?
         .map_err(|(kind, detail)| map_err(kind, detail))?;
     Ok("Provider smoke check passed (/models + /chat/completions)".to_string())
+}
+
+pub async fn provider_smoke_check_with_api_key(api_key: Option<String>) -> Result<String, String> {
+    let config = config_handle()?;
+    let cfg = config.lock().clone();
+    let key = match api_key {
+        Some(value) => crate::api_keys::normalize_api_key(&value)?,
+        None => crate::api_keys::get_summary_api_key()?
+            .ok_or_else(|| "Missing API key".to_string())?,
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        llm_client::smoke_check_with_api_key(&cfg, key)
+    })
+    .await
+    .map_err(|err| format!("API key test worker failed: {err}"))?
+    .map_err(|(kind, detail)| map_err(kind, detail))?;
+    Ok("API key test passed".to_string())
 }

@@ -2,9 +2,9 @@ use crate::audio::{
     try_recording_state, RecordingState, SILENCE_TIMEOUT_SAMPLES, VAD_CHUNK_SIZE,
     VAD_POST_BUFFER_SAMPLES, VAD_PRE_BUFFER_SAMPLES, VAD_SAMPLE_RATE,
 };
-use crate::transcription::worker::queue_transcription_with_source;
-use crate::transcription::{spawn_transcription_worker, TranscriptionSource};
-use log::{error, info};
+use crate::transcription::worker::{ensure_transcription_worker, queue_transcription_with_source};
+use crate::transcription::TranscriptionSource;
+use log::{debug, error, info};
 use parking_lot::Mutex as ParkingMutex;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
@@ -460,11 +460,7 @@ pub fn start_system_audio_capture(
         let (vad_threshold, partial_interval) = {
             let mut state_guard = state.lock();
 
-            if state_guard.transcription_tx.is_none() {
-                let (tx, handle) = spawn_transcription_worker(app_handle.clone());
-                state_guard.transcription_tx = Some(tx);
-                state_guard.transcription_handle = Some(handle);
-            }
+            ensure_transcription_worker(&mut state_guard, app_handle.clone());
 
             (
                 state_guard.vad_threshold,
@@ -521,6 +517,16 @@ pub fn start_system_audio_capture(
 
 pub fn stop_system_audio_capture(state: Arc<ParkingMutex<RecordingState>>) -> Result<(), String> {
     unsafe {
+        {
+            let state_guard = state.lock();
+            let session_ptr = addr_of!(SYSTEM_AUDIO_SESSION);
+            let no_active_session = (*session_ptr).is_none();
+            if !state_guard.system_audio_enabled && no_active_session {
+                debug!("System audio capture already stopped");
+                return Ok(());
+            }
+        }
+
         // Flush pending local/system session before tearing down globals.
         finalize_active_system_audio_session("system_audio_capture_stopped");
 
