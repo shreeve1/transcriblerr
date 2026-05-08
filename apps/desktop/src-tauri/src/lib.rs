@@ -368,7 +368,7 @@ fn persist_runtime_audio_config_from_state() -> Result<(), String> {
 
 fn apply_runtime_audio_config(config: &RuntimeAudioConfig) {
     let mode = normalize_backend_mode(&config.transcription_mode)
-        .unwrap_or_else(|| "local".to_string());
+        .unwrap_or_else(|| "llm".to_string());
     let clamped_threshold = config.vad_threshold.clamp(0.01, 0.99);
     let clamped_interval_seconds = config.partial_interval_seconds.clamp(0.5, 30.0);
     let samples = ((clamped_interval_seconds * VAD_SAMPLE_RATE as f32).round() as usize).max(1);

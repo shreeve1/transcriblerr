@@ -98,7 +98,7 @@ pub fn default_recording_state() -> RecordingState {
         vad_threshold: DEFAULT_VAD_THRESHOLD,
         partial_transcript_interval_samples: DEFAULT_PARTIAL_TRANSCRIPT_INTERVAL_SAMPLES,
         system_audio_enabled: false,
-        transcription_mode: "local".to_string(),
+        transcription_mode: "llm".to_string(),
         llm_transcription_model: crate::transcription::llm_client::default_transcription_model(),
         llm_auth_blocked: false,
         recording_save_enabled: false,

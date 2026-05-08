@@ -132,7 +132,7 @@ function App() {
   const [isSavingSummaryConfig, setIsSavingSummaryConfig] = useState(false);
   const { theme, setTheme } = useTheme();
   const [transcriptionMode, setTranscriptionMode] =
-    useState<BackendMode>("local");
+    useState<BackendMode>("openai");
   const [transcriptionModel, setTranscriptionModel] =
     useState("gpt-4o-transcribe");
   const [copiedAllHistory, setCopiedAllHistory] = useState(false);
