@@ -62,8 +62,9 @@ git submodule update --init --recursive
 - `.env` files must remain untracked.
 - `Cargo.lock` should be tracked for reproducible desktop app builds.
 - Model files are large; do not commit downloaded Whisper models.
-- `apps/desktop/src-tauri/tauri.conf.json` CSP should stay restrictive. Do not add broad permissions or plugins unless the frontend actually uses them.
+- `apps/desktop/src-tauri/tauri.conf.json` CSP should stay restrictive. Do not add broad permissions or plugins unless the frontend actually uses.
 - The app is macOS-focused. Be careful with cross-platform assumptions in CPAL, ScreenCaptureKit, and Swift bridge code.
+- After reinstalling or rebuilding the app, TCC permissions (Screen Recording, Microphone) may need to be reset with `tccutil reset ScreenCapture com.transcriblerr.app` and `tccutil reset Microphone com.transcriblerr.app`, then relaunch the app. Stale TCC entries from a previous install can cause "The user declined TCCs" errors even when permissions appear enabled in System Settings.
 
 ## Verification
 

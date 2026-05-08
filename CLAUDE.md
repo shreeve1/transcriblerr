@@ -67,6 +67,31 @@ The frontend calls Tauri commands via `invoke()` (e.g., `invoke("start_recording
 - **Environment variables**: Backend loads `.env` via `dotenvy`. See `apps/desktop/.env.example` for LLM transcription and summarization config (`LLM_API_BASE_URL`, `LLM_SUMMARY_*`).
 - **Transcription modes**: "local" (whisper.cpp via asr-core) or "llm" (OpenAI-compatible API). Aliases: "legacy_ws"→local, "api"/"openai"→llm.
 
+## macOS TCC Permissions
+
+The app requires Screen Recording and Microphone TCC permissions for system audio capture. When reinstalling or after a fresh build, macOS may not re-prompt if stale entries exist. Reset with:
+
+```bash
+tccutil reset ScreenCapture com.transcriblerr.app
+tccutil reset Microphone com.transcriblerr.app
+```
+
+Then relaunch the app to get fresh permission prompts. If `tccutil` alone doesn't work, also manually remove the app from **System Settings → Privacy & Security → Screen Recording / Microphone** before relaunching.
+
+When doing a full uninstall, remove these locations to clean all app state:
+
+```bash
+rm -rf ~/Library/Application\ Support/com.transcriblerr.app
+rm -rf ~/Library/Application\ Support/local-whisper
+rm -rf ~/Library/Application\ Support/transcriblerr
+rm -rf ~/Library/Caches/com.transcriblerr.app
+rm -rf ~/Library/Saved\ Application\ State/transcriblerr.app.*
+rm -rf /Applications/transcriblerr.app
+security delete-generic-password -s "com.transcriblerr.app" -a "llm-api-key"
+tccutil reset ScreenCapture com.transcriblerr.app
+tccutil reset Microphone com.transcriblerr.app
+```
+
 ## Requirements
 
 - Apple Silicon Mac (macOS 13+)
