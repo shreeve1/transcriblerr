@@ -193,6 +193,97 @@ export const formatInstallProgress = (
   return `${percent.toFixed(1)}% (${formatModelSize(progress.downloadedBytes)} / ${formatModelSize(total)})`;
 };
 
+const NEXT_SECTION_RE = /^(?:#{1,4}\s|\d+[.)]\s)/;
+const BOLD_SECTION_KEYWORDS =
+  /^(?:Summary|Key\s+Points|Action\s+Items|Participants|Agenda|Notes|Highlights|Takeaways|Decisions|Discussion|Attendees|Objectives|Next\s+Steps|Topics|Overview)/i;
+const isBoldSectionHeader = (line: string): boolean => {
+  const m = line.match(/^\*\*([^*]+)\*\*\s*$/);
+  return !!m && BOLD_SECTION_KEYWORDS.test(m[1].trim());
+};
+
+export const extractMeetingTitle = (summary: string): string | null => {
+  if (!summary) return null;
+
+  const lines = summary.split("\n");
+  let headerLineIdx = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const stripped = raw
+      .replace(/\*+/g, "")
+      .replace(/^#{1,4}\s+/, "")
+      .replace(/^\d+[.)]\s+/, "")
+      .trim();
+    if (/^Meeting\s+Title\s*:?\s*/i.test(stripped)) {
+      headerLineIdx = i;
+      break;
+    }
+  }
+
+  if (headerLineIdx === -1) return null;
+
+  const rawHeader = lines[headerLineIdx];
+  const cleanedHeader = rawHeader
+    .replace(/\*+/g, "")
+    .replace(/^#{1,4}\s+/, "")
+    .replace(/^\d+[.)]\s+/, "")
+    .trim();
+  const inlineTitle = cleanedHeader
+    .replace(/^Meeting\s+Title\s*:?\s*/i, "")
+    .replace(/`+/g, "")
+    .trim();
+  if (inlineTitle) return inlineTitle;
+
+  for (let i = headerLineIdx + 1; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+    if (NEXT_SECTION_RE.test(trimmed) || isBoldSectionHeader(trimmed)) return null;
+    const cleaned = trimmed.replace(/\*+/g, "").replace(/`+/g, "").trim();
+    if (!cleaned) continue;
+    return cleaned;
+  }
+
+  return null;
+};
+
+const UTF8_BYTE_BUDGET = 180;
+
+export const sanitizeFilename = (title: string): string => {
+  let result = title;
+  result = result.replace(/[/\\\x00-\x1F\x7F]/g, "");
+  result = result.replace(/[:*?"<>|]/g, "-");
+  result = result.replace(/[\s-]+/g, "-");
+  result = result.replace(/^[-.\s]+|[-.\s]+$/g, "");
+
+  const chars = Array.from(result);
+  const encoder = new TextEncoder();
+  let byteLen = 0;
+  let charIdx = 0;
+  for (const char of chars) {
+    const charBytes = encoder.encode(char).byteLength;
+    if (byteLen + charBytes > UTF8_BYTE_BUDGET) break;
+    byteLen += charBytes;
+    charIdx++;
+  }
+  result = chars.slice(0, charIdx).join("");
+
+  return result;
+};
+
+export const buildSummaryFilename = (
+  summary: string,
+  timestamp: string,
+): string => {
+  const title = extractMeetingTitle(summary);
+  if (title) {
+    const safeTitle = sanitizeFilename(title);
+    if (safeTitle) {
+      return `${safeTitle} - ${timestamp}.md`;
+    }
+  }
+  return `summary-${timestamp}.md`;
+};
+
 export const formatSegmentTimestamp = (timestamp: number) => {
   const millis = timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
   return new Date(millis).toLocaleString("en-US", {

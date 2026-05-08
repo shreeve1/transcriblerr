@@ -47,6 +47,7 @@ import {
   normalizeMessageText,
   sourceLabel,
   summarizeLocally,
+  buildSummaryFilename,
 } from "./utils/transcript";
 import "./App.css";
 
@@ -1049,7 +1050,8 @@ function App() {
         const now = new Date();
         const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}-${String(now.getSeconds()).padStart(2, "0")}`;
         const normalizedPath = savePath.replace(/[/\\]+$/, "");
-        const filePath = `${normalizedPath}/summary-${timestamp}.md`;
+        const fileName = buildSummaryFilename(summary, timestamp);
+        const filePath = `${normalizedPath}/${fileName}`;
         await invoke<string>("save_summary_to_file", {
           path: filePath,
           content: summary,
